@@ -13,6 +13,7 @@
 
   const els = {
     refreshBtn: document.getElementById("refreshBtn"),
+    themeToggle: document.getElementById("themeToggle"),
     fetchedAt: document.getElementById("fetchedAt"),
     containerName: document.getElementById("containerName"),
     searchInput: document.getElementById("searchInput"),
@@ -209,6 +210,14 @@
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeConfirm();
+  });
+
+  // ---- тема (тёмная/светлая) ----
+  els.themeToggle.addEventListener("click", () => {
+    const current = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+    const next = current === "light" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem("awg-theme", next);
   });
 
   // ---- events ----
