@@ -9,6 +9,7 @@
     fetchedAt: null,
     includeNever: false,
     search: "",
+    statusFilter: "all", // "all" | "active" | "blocked"
   };
 
   const els = {
@@ -17,6 +18,7 @@
     fetchedAt: document.getElementById("fetchedAt"),
     containerName: document.getElementById("containerName"),
     searchInput: document.getElementById("searchInput"),
+    statusFilter: document.getElementById("statusFilter"),
     includeNeverToggle: document.getElementById("includeNeverToggle"),
     tableBody: document.getElementById("tableBody"),
     statTotal: document.getElementById("statTotal"),
@@ -87,6 +89,8 @@
 
     const q = state.search.trim().toLowerCase();
     const filtered = state.users.filter((u) => {
+      if (state.statusFilter === "active" && u.blocked) return false;
+      if (state.statusFilter === "blocked" && !u.blocked) return false;
       if (!q) return true;
       return (
         u.name.toLowerCase().includes(q) ||
@@ -210,6 +214,17 @@
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeConfirm();
+  });
+
+  // ---- фильтр статуса ----
+  els.statusFilter.addEventListener("click", (e) => {
+    const btn = e.target.closest(".segmented__btn");
+    if (!btn) return;
+    state.statusFilter = btn.dataset.status;
+    els.statusFilter.querySelectorAll(".segmented__btn").forEach((b) => {
+      b.classList.toggle("is-active", b === btn);
+    });
+    render();
   });
 
   // ---- тема (тёмная/светлая) ----

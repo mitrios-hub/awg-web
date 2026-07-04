@@ -65,6 +65,11 @@
       <svg class="icon" viewBox="0 0 20 20" fill="none"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.6"/><path d="M17 17l-4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       <input type="text" id="searchInput" placeholder="Поиск по имени или IP…" autocomplete="off">
     </div>
+    <div class="segmented" id="statusFilter" role="tablist">
+      <button class="segmented__btn is-active" data-status="all" role="tab">Все</button>
+      <button class="segmented__btn" data-status="active" role="tab">Активные</button>
+      <button class="segmented__btn" data-status="blocked" role="tab">Заблокированные</button>
+    </div>
     <label class="toggle">
       <input type="checkbox" id="includeNeverToggle">
       <span>Показывать тех, кто никогда не подключался</span>
