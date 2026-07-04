@@ -1,193 +1,103 @@
-# awg-web — веб-панель управления пользователями AmneziaWG
+## WEB-приложение для контроля клиентов Amnezia-VPN
 
-Веб-версия `awg_userctl.sh`: тот же принцип (данные — из `docker exec` в
-контейнер `amnezia-awg`: `clientsTable`, `wg show <if> dump`,
-`iptables -t raw`), но с браузерным интерфейсом вместо терминального меню.
+### Описание
+Amneia VPN не умет блокировать/разблокировать доступ пользователей, неудобно смотреть статистику и кто онлайн, обслуживать подключения крайне неудобно. В данном коде реализовано WEB-приложение, которое выполняет задачи, аналогичные [[amnezia_userctl_tui|TUI приложению]]:
+- достает из docker контейнера `amnezia-awg` данные клиентов
+- показывает таблицу подключенных клиентов и данные пира, плюс статус блокировки
+- умеет блокировать/разблокировать клиентов через RAW таблицу сетевого фильтра (блокировка и разблокировка производятся внутри контейнера, в котором уже есть утилита `iptables`)
 
-Данные обновляются **только** при открытии страницы и по кнопке
-«Обновить» — никакого автообновления по таймеру ни на бэкенде, ни на
-фронтенде.
+Если внутри контейнера нет `iptables`, то установить: `pkg add iptables`
 
-## Требования на сервере деплоя
+Для работы с WEB приложением обязательно:
+- выбрать порт WEB (по умолчанию `10001`)
+- должен работать контейнер Amnezia (по умолчанию `amnezia-awg`)
+- интерфейс контейнера по умолчанию `wg0` (внутри контейнера)
+- рекомендуется использовать сертификаты TLS для WEB-сайта
+- создать пароль с помощью утилиты `hashpw`
 
-- Go 1.22+ (для сборки)
-- Docker, с доступом к нему у пользователя, из-под которого будет
-  работать сервис (обычно `docker exec` требует либо root, либо членства
-  в группе `docker`)
-- Контейнер `amnezia-awg` (или другое имя — настраивается)
+Сертификаты можно создать через [[install_x-ui#Основной способ|Let's encrypt]]
 
-## Сборка
-
-```bash
-cd awg-web
-go mod tidy                    # скачает Gin и golang.org/x/crypto — нужен интернет
-go build -o awg-web .
-go build -o hashpw ./cmd/hashpw
-```
-
-Получится два бинарника — `awg-web` (сам сервер) и `hashpw` (утилита
-формирования пароля) — плюс папка `static/` рядом. Сервер читает статику
-с диска по относительному пути `./static`, поэтому запускать его нужно
-из директории, где лежит `static/` (либо скопировать эту папку рядом с
-бинарником при деплое в другое место).
-
-## Настройка: config.json
-
-Все параметры — в одном JSON-файле (по умолчанию `./config.json`, путь
-можно поменять флагом `-config`). Возьми `config.example.json` за основу:
-
-```bash
-cp config.example.json config.json
-```
-
+Вот пример конфига перед запуском приложения:
 ```json
+└─# cat config.json
 {
   "listen_addr": "0.0.0.0:10001",
   "container": "amnezia-awg",
   "wg_interface": "wg0",
   "clients_table_path": "/opt/amnezia/awg/clientsTable",
   "auth_user": "admin",
-  "auth_pass_hash": "",
-  "tls_cert_path": "",
-  "tls_key_path": ""
-}
+  "auth_pass_hash": "$2a$10$XunIzOVbXAJYNR7r6pOS4.6MZTdOPFiZsUtezIJ6Fkb/XByKvz4zG",
+  "tls_cert_path": "/root/cert/yoursite.domain/fullchain.pem",
+  "tls_key_path": "/root/cert/yoursite.domain/privkey.pem"
 ```
 
-| Поле                  | Назначение                                                          |
-|------------------------|----------------------------------------------------------------------|
-| `listen_addr`          | адрес:порт. `0.0.0.0:10001` — слушать на всех интерфейсах, порт 10001 |
-| `container`            | имя контейнера AmneziaWG                                             |
-| `wg_interface`         | имя WireGuard-интерфейса                                             |
-| `clients_table_path`   | путь к `clientsTable` внутри контейнера                              |
-| `auth_user`            | логин для входа в панель                                             |
-| `auth_pass_hash`       | bcrypt-хэш пароля — **не пиши сюда пароль вручную**, см. ниже        |
-| `tls_cert_path`        | путь к TLS-сертификату (`.crt`/`.pem`). Пусто → без TLS              |
-| `tls_key_path`         | путь к приватному ключу TLS. Пусто → без TLS                         |
+### Установка приложения
+Пример:
+```bash
+# каталог /opt вероятно уже есть
+cd /opt
 
-Если `tls_cert_path`/`tls_key_path` не заданы — сервер поднимается по
-обычному **незашифрованному HTTP** (и явно предупреждает об этом в
-логе при старте). Если заполнено только одно из двух полей — сервер
-откажется стартовать (это ошибка конфигурации).
+# скачать репо
+#git config --global credential.helper store
+git clone https://gitflic.ru/project/mitrios/awg-web.git
 
-## Пароль: утилита hashpw
+# если нет сертификата у сервера но есть доменное имя (ОТКРЫТЬ ПОРТ 80)
+#iptables -P INPUT ACCEPT
+certbot certonly --standalone -d yoursite.com
+#iptables -P INPUT DROP
+```
 
-Пароль в конфиге хранится не в открытом виде, а как **bcrypt-хэш**.
-Чтобы задать или сменить пароль:
+Вывод:
+```
+...
+Successfully received certificate.
+Certificate is saved at: /etc/letsencrypt/live/yoursite.com/fullchain.pem
+Key is saved at:         /etc/letsencrypt/live/yoursite.com/privkey.pem
+...
+```
+Эти пути и файлы сертификатов прописать в кавычках в конфиге (ниже)
 
+Вот состав файлов:
+```sql
+├── QUICKSTART.md
+├── awg-web
+├── awg-web.service
+├── config.json
+├── hashpw
+└── static
+    ├── app.js
+    ├── index.html
+    └── style.css
+```
+Скопировать файлы в каталог `/opt/awg-web` сервера-хоста, в котором контейнер.
+Пример (если порт 22 - можно не указывать):
+```powershell
+scp -P 22 -r .\awg-web\* user@yoursite.domain:/opt/awg-web/
+```
+
+Проверить наличие и имя контейнеров на сервере:
+`docker ps -a`
+`docker ps -a | grep amnezia`
+
+Права на конфиг:
+```bash
+sudo chmod 600 config.json
+```
+
+Задать имя админа и пароль (имя юзера и хэш пароля сохраняются в конфиге)
 ```bash
 ./hashpw -config ./config.json -user admin
 ```
 
-Утилита дважды спросит пароль (ввод скрыт, на экране ничего не
-отображается), посчитает bcrypt-хэш и запишет его вместе с логином в
-`config.json`, не трогая остальные поля. Если `config.json` ещё не
-существует — создаст новый с настройками по умолчанию.
-
-Минимальная длина пароля — 8 символов.
-
-## Запуск (для проверки руками)
-
+Создать сервис приложения (автозапуск и работа как сервис)
 ```bash
-./awg-web -config ./config.json
-```
-
-Если `tls_cert_path/tls_key_path` не указаны — открой
-`http://IP-сервера:10001` (или `https://`, если TLS настроен), браузер
-спросит логин/пароль.
-
-## ⚠️ Безопасность при удалённом доступе — обязательно прочитать
-
-1. **Без TLS Basic Auth передаёт пароль практически открытым текстом**
-   (base64, не шифрование) при каждом запросе — перехватить по пути
-   тривиально. Сервер сам предупредит об этом в логе, если TLS не
-   настроен.
-2. Проще всего включить TLS — указать в конфиге пути к сертификату и
-   ключу:
-   ```json
-   "tls_cert_path": "/etc/letsencrypt/live/твой-домен/fullchain.pem",
-   "tls_key_path":  "/etc/letsencrypt/live/твой-домен/privkey.pem"
-   ```
-   Получить сертификат Let's Encrypt: `certbot certonly --standalone -d твой-домен`
-   (либо через `--webroot`/DNS-плагин, если 10001 — единственный
-   открытый порт).
-3. Альтернатива без домена/белого IP — слушать `listen_addr` на
-   VPN-адресе сервера (например, `10.8.1.254:10001`) и не открывать порт
-   наружу вообще, заходить только через сам WireGuard-туннель.
-4. Дополнительно ограничь доступ файрволом по IP-адресам, с которых ты
-   реально заходишь.
-5. Пароль — длинный и уникальный, не тот же, что от сервера.
-6. Файл `config.json` содержит хэш пароля (не сам пароль, но всё равно)
-   и пути к приватному TLS-ключу — держи права `600` и не клади его в
-   публичный git-репозиторий.
-
-## systemd-юнит (пример)
-
-`/etc/systemd/system/awg-web.service`:
-
-```ini
-[Unit]
-Description=AmneziaWG web panel
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/awg-web
-ExecStart=/opt/awg-web/awg-web -config /opt/awg-web/config.json
-Restart=on-failure
-RestartSec=3
-User=root
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo mkdir -p /opt/awg-web
-sudo cp awg-web hashpw /opt/awg-web/
-sudo cp -r static /opt/awg-web/
-sudo cp config.json /opt/awg-web/
-sudo chmod 600 /opt/awg-web/config.json
+sudo cp awg-web.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now awg-web
-sudo journalctl -u awg-web -f
 ```
 
-`User=root` — потому что `docker exec` обычно требует либо root, либо
-членства пользователя-сервиса в группе `docker`. Если заведёшь отдельного
-системного пользователя и добавишь его в группу `docker` — используй его
-вместо root, это безопаснее.
-
-Смена пароля на работающем сервисе:
+Если нужно проверить без сервиса - разовый запуск:
 ```bash
-sudo /opt/awg-web/hashpw -config /opt/awg-web/config.json -user admin
-sudo systemctl restart awg-web
+# Выход C-c
+/opt/awg-web/awg-web -config /opt/awg-web/config.json
 ```
-
-## Что показывает панель
-
-- Карточки сверху: всего пиров / активны / заблокированы / никогда не
-  подключались.
-- Таблица: имя (из `clientsTable`, «—» если Amnezia ещё не присвоила
-  имя — обычно это происходит при первом подключении), IP, endpoint,
-  последний handshake, статус, кнопка «Отключить»/«Включить».
-- Живая точка рядом со статусом «Активен» пульсирует, только если
-  handshake был реально недавно (последние ~3 минуты) — это не
-  декорация, а показатель настоящей live-активности пира прямо сейчас.
-- Поиск по имени/IP — фильтрует уже загруженный список на лету, без
-  повторных запросов к серверу.
-- Чекбокс «Показывать тех, кто никогда не подключался» — по умолчанию
-  выключен, включение делает новый запрос к `/api/users?includeNever=true`.
-
-## Известные ограничения
-
-- `go mod tidy` требует доступ к `proxy.golang.org` на этапе сборки —
-  если сервер деплоя без интернета, скачай зависимости на другой машине
-  и перенеси `go.sum` + модульный кэш, либо настрой `GOPROXY` на
-  внутреннее зеркало. На Ubuntu/Debian также можно поставить пакеты
-  `golang-github-gin-gonic-gin-dev` и `golang-golang-x-crypto-dev` из
-  штатного репозитория и собрать в GOPATH-режиме (`GO111MODULE=off`) —
-  зависимостей из интернета тогда не потребуется вовсе.
-- Приложение не хранит собственную базу — при каждом запросе к
-  `/api/users` заново выполняет `docker exec` (быстро, но при очень
-  большом числе клиентов имеет смысл добавить кэширование).
