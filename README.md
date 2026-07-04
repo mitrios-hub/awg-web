@@ -81,6 +81,7 @@ scp -P 22 -r .\awg-web\* user@yoursite.domain:/opt/awg-web/
 
 Права на конфиг:
 ```bash
+cp config.exapmle.json config.json
 sudo chmod 600 config.json
 ```
 
