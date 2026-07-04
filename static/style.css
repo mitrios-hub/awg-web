@@ -254,6 +254,34 @@ body {
 }
 .toggle input { accent-color: var(--teal); width: 15px; height: 15px; cursor: pointer; }
 
+.segmented {
+  display: inline-flex;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 3px;
+  gap: 2px;
+}
+.segmented__btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s ease, color .15s ease;
+}
+.segmented__btn:hover { color: var(--text); }
+.segmented__btn.is-active {
+  background: var(--panel-alt);
+  color: var(--teal);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
 /* ===================== ТАБЛИЦА ===================== */
 .table-wrap {
   background: var(--panel);
