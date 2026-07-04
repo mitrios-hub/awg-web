@@ -1,0 +1,22 @@
+[Unit]
+Description=AmneziaWG web panel
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/awg-web
+ExecStart=/opt/awg-web/awg-web -config /opt/awg-web/config.json
+Restart=on-failure
+RestartSec=3
+User=root
+
+# Базовое ужесточение — раскомментируй, если проверишь, что docker exec
+# продолжает работать в твоём окружении (зависит от того, где сокет
+# докера и как именно ты его используешь):
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ReadWritePaths=/opt/awg-web
+
+[Install]
+WantedBy=multi-user.target

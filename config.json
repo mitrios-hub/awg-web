@@ -1,0 +1,10 @@
+{
+  "listen_addr": "0.0.0.0:10001",
+  "container": "amnezia-awg",
+  "wg_interface": "wg0",
+  "clients_table_path": "/opt/amnezia/awg/clientsTable",
+  "auth_user": "admin",
+  "auth_pass_hash": "$2a$10$XunIzOVbXAJYNR7r6pOS4.6MZTdOPFiZsUtezIJ6Fkb/XByKvz4zG",
+  "tls_cert_path": "/root/cert/x1.trubodur.ru/fullchain.pem",
+  "tls_key_path": "/root/cert/x1.trubodur.ru/privkey.pem"
+}

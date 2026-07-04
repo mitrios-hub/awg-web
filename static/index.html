@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AmneziaWG · Панель управления</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar__left">
+    <div class="brand">
+      <span class="brand__mark" aria-hidden="true"></span>
+      <div class="brand__text">
+        <div class="brand__title">AmneziaWG</div>
+        <div class="brand__subtitle" id="containerName">панель управления пирами</div>
+      </div>
+    </div>
+  </div>
+  <div class="topbar__right">
+    <span class="fetched-at" id="fetchedAt">—</span>
+    <button class="btn btn--ghost" id="refreshBtn">
+      <svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M4 10a6 6 0 0 1 10.2-4.3M16 10a6 6 0 0 1-10.2 4.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M14 3v3h-3M6 17v-3h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Обновить
+    </button>
+  </div>
+</div>
+
+<main class="container">
+
+  <section class="stats" id="stats">
+    <div class="stat-card">
+      <div class="stat-card__value" id="statTotal">—</div>
+      <div class="stat-card__label">всего пиров</div>
+    </div>
+    <div class="stat-card stat-card--live">
+      <div class="stat-card__value" id="statActive">—</div>
+      <div class="stat-card__label">активны</div>
+    </div>
+    <div class="stat-card stat-card--danger">
+      <div class="stat-card__value" id="statBlocked">—</div>
+      <div class="stat-card__label">заблокированы</div>
+    </div>
+    <div class="stat-card stat-card--muted">
+      <div class="stat-card__value" id="statNever">—</div>
+      <div class="stat-card__label">никогда не подключались</div>
+    </div>
+  </section>
+
+  <section class="toolbar">
+    <div class="search">
+      <svg class="icon" viewBox="0 0 20 20" fill="none"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.6"/><path d="M17 17l-4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <input type="text" id="searchInput" placeholder="Поиск по имени или IP…" autocomplete="off">
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="includeNeverToggle">
+      <span>Показывать тех, кто никогда не подключался</span>
+    </label>
+  </section>
+
+  <section class="table-wrap">
+    <table class="peers">
+      <thead>
+        <tr>
+          <th class="col-num">#</th>
+          <th>Имя</th>
+          <th>IP</th>
+          <th>Endpoint</th>
+          <th>Последний handshake</th>
+          <th>Статус</th>
+          <th class="col-action"></th>
+        </tr>
+      </thead>
+      <tbody id="tableBody">
+        <tr><td colspan="7" class="empty-state">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</main>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<div class="confirm-overlay" id="confirmOverlay">
+  <div class="confirm-box">
+    <div class="confirm-box__title" id="confirmTitle">Подтверждение</div>
+    <div class="confirm-box__text" id="confirmText"></div>
+    <div class="confirm-box__actions">
+      <button class="btn btn--ghost" id="confirmCancel">Отмена</button>
+      <button class="btn btn--danger" id="confirmOk">Подтвердить</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
