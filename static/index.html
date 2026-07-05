@@ -67,7 +67,7 @@
     </div>
     <div class="segmented" id="statusFilter" role="tablist">
       <button class="segmented__btn is-active" data-status="all" role="tab">Все</button>
-      <button class="segmented__btn" data-status="active" role="tab">Активные</button>
+      <button class="segmented__btn" data-status="online" role="tab">Онлайн</button>
       <button class="segmented__btn" data-status="blocked" role="tab">Заблокированные</button>
     </div>
     <label class="toggle">
@@ -107,6 +107,22 @@
       <button class="btn btn--ghost" id="confirmCancel">Отмена</button>
       <button class="btn btn--danger" id="confirmOk">Подтвердить</button>
     </div>
+  </div>
+</div>
+
+<div class="confirm-overlay" id="reissueOverlay">
+  <div class="reissue-box">
+    <div class="reissue-box__title" id="reissueTitle">Клиент перевыпущен</div>
+    <div class="reissue-box__subtitle" id="reissueSubtitle"></div>
+    <div class="reissue-box__qr">
+      <img id="reissueQr" alt="QR-код нового конфига">
+    </div>
+    <div class="reissue-box__hint">Отсканируй в приложении Amnezia либо скачай файл ниже</div>
+    <div class="reissue-box__actions">
+      <button class="btn" id="reissueDownload">Скачать .conf</button>
+      <button class="btn" id="reissueCopy">Скопировать текст</button>
+    </div>
+    <button class="reissue-box__close" id="reissueClose">Закрыть</button>
   </div>
 </div>
 

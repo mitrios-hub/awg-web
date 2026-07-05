@@ -31,6 +31,13 @@
     confirmText: document.getElementById("confirmText"),
     confirmOk: document.getElementById("confirmOk"),
     confirmCancel: document.getElementById("confirmCancel"),
+    reissueOverlay: document.getElementById("reissueOverlay"),
+    reissueTitle: document.getElementById("reissueTitle"),
+    reissueSubtitle: document.getElementById("reissueSubtitle"),
+    reissueQr: document.getElementById("reissueQr"),
+    reissueDownload: document.getElementById("reissueDownload"),
+    reissueCopy: document.getElementById("reissueCopy"),
+    reissueClose: document.getElementById("reissueClose"),
   };
 
   function escapeHtml(s) {
@@ -89,7 +96,7 @@
 
     const q = state.search.trim().toLowerCase();
     const filtered = state.users.filter((u) => {
-      if (state.statusFilter === "active" && u.blocked) return false;
+      if (state.statusFilter === "online" && !u.recentlyActive) return false;
       if (state.statusFilter === "blocked" && !u.blocked) return false;
       if (!q) return true;
       return (
@@ -118,21 +125,31 @@
 
     let statusHtml;
     let actionHtml;
+    const reissueBtn =
+      '<button class="btn btn--row btn--row-reissue" data-action="reissue" data-ip="' +
+      u.ip + '" data-name="' + escapeHtml(u.name) + '">Перевыпустить</button>';
+
     if (u.blocked) {
       statusHtml =
         '<span class="status-pill status-pill--blocked">' +
         '<span class="status-dot status-dot--blocked"></span>Заблокирован</span>';
       actionHtml =
+        '<div class="row-actions">' +
         '<button class="btn btn--row btn--row-unblock" data-action="unblock" data-ip="' +
-        u.ip + '" data-name="' + escapeHtml(u.name) + '">Включить</button>';
+        u.ip + '" data-name="' + escapeHtml(u.name) + '">Включить</button>' +
+        reissueBtn +
+        "</div>";
     } else {
       const liveClass = u.recentlyActive ? " status-dot--live" : "";
       statusHtml =
         '<span class="status-pill status-pill--active">' +
         '<span class="status-dot status-dot--active' + liveClass + '"></span>Активен</span>';
       actionHtml =
+        '<div class="row-actions">' +
         '<button class="btn btn--row btn--row-block" data-action="block" data-ip="' +
-        u.ip + '" data-name="' + escapeHtml(u.name) + '">Отключить</button>';
+        u.ip + '" data-name="' + escapeHtml(u.name) + '">Отключить</button>' +
+        reissueBtn +
+        "</div>";
     }
 
     return (
@@ -160,11 +177,18 @@
         "Заблокировать «" + name + "» (" + ip + ")? Трафик с этого IP будет дропаться на уровне iptables.",
         () => performAction("block", ip)
       );
-    } else {
+    } else if (action === "unblock") {
       openConfirm(
         "Включить пользователя",
         "Снять блокировку с «" + name + "» (" + ip + ")?",
         () => performAction("unblock", ip)
+      );
+    } else if (action === "reissue") {
+      openConfirm(
+        "Перевыпустить конфиг",
+        "Сгенерировать новую пару ключей для «" + name + "» (" + ip + ") и заменить публичный ключ на сервере? " +
+          "Старый конфиг/QR (если он у клиента ещё остался) сразу перестанет работать — потребуется установить новый.",
+        () => performReissue(ip)
       );
     }
   }
@@ -190,6 +214,61 @@
     }
   }
 
+  let lastReissue = null;
+
+  async function performReissue(ip) {
+    try {
+      const res = await fetch("/api/users/" + encodeURIComponent(ip) + "/reissue", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || ("HTTP " + res.status));
+      }
+      lastReissue = data;
+      els.reissueSubtitle.textContent = data.name + " (" + data.ip + ") — новый конфиг готов";
+      els.reissueQr.src = "data:image/png;base64," + data.qrPngBase64;
+      els.reissueOverlay.classList.add("is-open");
+      showToast("Клиент перевыпущен", false);
+      loadUsers(); // clientId сменился — подтягиваем актуальные данные
+    } catch (e) {
+      showToast("Не удалось перевыпустить: " + e.message, true);
+    }
+  }
+
+  els.reissueDownload.addEventListener("click", () => {
+    if (!lastReissue) return;
+    const blob = new Blob([lastReissue.configText], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = lastReissue.filename || "client.conf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  els.reissueCopy.addEventListener("click", async () => {
+    if (!lastReissue) return;
+    try {
+      await navigator.clipboard.writeText(lastReissue.configText);
+      showToast("Текст конфига скопирован", false);
+    } catch (e) {
+      showToast("Не удалось скопировать: " + e.message, true);
+    }
+  });
+
+  function closeReissue() {
+    els.reissueOverlay.classList.remove("is-open");
+    lastReissue = null;
+  }
+  els.reissueClose.addEventListener("click", closeReissue);
+  els.reissueOverlay.addEventListener("click", (e) => {
+    if (e.target === els.reissueOverlay) closeReissue();
+  });
+
   // ---- confirm modal ----
   let pendingConfirm = null;
 
@@ -213,7 +292,10 @@
     if (fn) fn();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeConfirm();
+    if (e.key === "Escape") {
+      closeConfirm();
+      closeReissue();
+    }
   });
 
   // ---- фильтр статуса ----

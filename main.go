@@ -28,6 +28,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -41,6 +42,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
 
 	"awg-web/internal/config"
@@ -89,11 +91,287 @@ type UsersResponse struct {
 
 var rawDropRe = regexp.MustCompile(`-s\s+(\d+\.\d+\.\d+\.\d+)(/32)?.*-j\s+DROP`)
 
+// ===================== ПЕРЕВЫПУСК КЛИЕНТА =====================
+//
+// "Перевыпустить" не восстанавливает утерянный приватный ключ клиента —
+// это математически невозможно (сервер никогда не хранил приватный ключ,
+// только производный от него публичный). Вместо этого генерируется НОВАЯ
+// пара ключей, и публичный ключ пира в wg0.conf заменяется на новый —
+// тот же IP, то же имя, тот же PSK, но с чистого листа. Старый (утерянный)
+// ключ при этом инвалидируется.
+
+type wgInterfaceParams struct {
+	Jc, Jmin, Jmax, S1, S2 string
+	H1, H2, H3, H4         string
+}
+
+type confPeer struct {
+	PublicKey    string
+	PresharedKey string
+	AllowedIPs   string
+}
+
+var kvLineRe = regexp.MustCompile(`^\s*([A-Za-z0-9]+)\s*=\s*(.+?)\s*$`)
+
+func parseWgConfInterface(conf string) wgInterfaceParams {
+	var p wgInterfaceParams
+	inInterface := false
+	for _, line := range strings.Split(conf, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[Interface]" {
+			inInterface = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			inInterface = false
+			continue
+		}
+		if !inInterface {
+			continue
+		}
+		m := kvLineRe.FindStringSubmatch(trimmed)
+		if m == nil {
+			continue
+		}
+		switch m[1] {
+		case "Jc":
+			p.Jc = m[2]
+		case "Jmin":
+			p.Jmin = m[2]
+		case "Jmax":
+			p.Jmax = m[2]
+		case "S1":
+			p.S1 = m[2]
+		case "S2":
+			p.S2 = m[2]
+		case "H1":
+			p.H1 = m[2]
+		case "H2":
+			p.H2 = m[2]
+		case "H3":
+			p.H3 = m[2]
+		case "H4":
+			p.H4 = m[2]
+		}
+	}
+	return p
+}
+
+// findPeerByIP ищет в wg0.conf блок [Peer] с нужным AllowedIPs.
+func findPeerByIP(conf, ip string) (confPeer, bool) {
+	blocks := strings.Split(conf, "[Peer]")
+	target := ip + "/32"
+	for _, block := range blocks[1:] { // blocks[0] — всё до первого [Peer] (секция [Interface])
+		var peer confPeer
+		for _, line := range strings.Split(block, "\n") {
+			m := kvLineRe.FindStringSubmatch(strings.TrimSpace(line))
+			if m == nil {
+				continue
+			}
+			switch m[1] {
+			case "PublicKey":
+				peer.PublicKey = m[2]
+			case "PresharedKey":
+				peer.PresharedKey = m[2]
+			case "AllowedIPs":
+				peer.AllowedIPs = m[2]
+			}
+		}
+		for _, a := range strings.Split(peer.AllowedIPs, ",") {
+			if strings.TrimSpace(a) == target {
+				return peer, true
+			}
+		}
+	}
+	return confPeer{}, false
+}
+
+func buildClientConfig(priv, ip string, cfg config.Config, p wgInterfaceParams, serverPub, psk string) string {
+	dns := cfg.ClientDNS
+	if dns == "" {
+		dns = "1.1.1.1, 1.0.0.1"
+	}
+	var b strings.Builder
+	b.WriteString("[Interface]\n")
+	fmt.Fprintf(&b, "PrivateKey = %s\n", priv)
+	fmt.Fprintf(&b, "Address = %s/32\n", ip)
+	fmt.Fprintf(&b, "DNS = %s\n", dns)
+	if p.Jc != "" {
+		fmt.Fprintf(&b, "Jc = %s\nJmin = %s\nJmax = %s\nS1 = %s\nS2 = %s\nH1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n",
+			p.Jc, p.Jmin, p.Jmax, p.S1, p.S2, p.H1, p.H2, p.H3, p.H4)
+	}
+	b.WriteString("\n[Peer]\n")
+	fmt.Fprintf(&b, "PublicKey = %s\n", serverPub)
+	fmt.Fprintf(&b, "PresharedKey = %s\n", psk)
+	b.WriteString("AllowedIPs = 0.0.0.0/0, ::/0\n")
+	fmt.Fprintf(&b, "Endpoint = %s\n", cfg.ClientEndpoint)
+	b.WriteString("PersistentKeepalive = 25\n")
+	return b.String()
+}
+
+var unsafeFilenameRe = regexp.MustCompile(`[^A-Za-z0-9_\-]+`)
+
+func sanitizeFilename(name string) string {
+	s := unsafeFilenameRe.ReplaceAllString(name, "_")
+	s = strings.Trim(s, "_")
+	if s == "" {
+		s = "client"
+	}
+	return s
+}
+
+// updateClientIDInTable переносит clientId (=публичный ключ) на новый в
+// clientsTable, чтобы имя клиента осталось привязано к тому же IP. Если
+// записи не было вовсе (orphan-пир) — создаёт новую с этим IP.
+func updateClientIDInTable(cfg config.Config, ip, newPub string) (string, error) {
+	raw, err := dockerExec(cfg.Container, "cat", cfg.ClientsTablePath)
+	if err != nil {
+		return "", fmt.Errorf("не удалось прочитать clientsTable: %w (%s)", err, raw)
+	}
+	var entries []ClientEntry
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return "", fmt.Errorf("не удалось разобрать clientsTable: %w", err)
+	}
+
+	name := ""
+	found := false
+	for i := range entries {
+		entryIP := strings.SplitN(entries[i].UserData.AllowedIps, "/", 2)[0]
+		if entryIP == ip {
+			entries[i].ClientID = newPub
+			name = entries[i].UserData.ClientName
+			found = true
+			break
+		}
+	}
+	if !found {
+		var e ClientEntry
+		e.ClientID = newPub
+		e.UserData.AllowedIps = ip + "/32"
+		entries = append(entries, e)
+	}
+
+	data, err := json.MarshalIndent(entries, "", "    ")
+	if err != nil {
+		return "", fmt.Errorf("не удалось сериализовать clientsTable: %w", err)
+	}
+	if err := dockerWriteFile(cfg.Container, cfg.ClientsTablePath, string(data)); err != nil {
+		return "", fmt.Errorf("не удалось сохранить clientsTable: %w", err)
+	}
+	return name, nil
+}
+
+type ReissueResponse struct {
+	IP          string `json:"ip"`
+	Name        string `json:"name"`
+	Filename    string `json:"filename"`
+	ConfigText  string `json:"configText"`
+	QRPngBase64 string `json:"qrPngBase64"`
+}
+
+func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
+	if cfg.ClientEndpoint == "" {
+		return ReissueResponse{}, fmt.Errorf("в конфиге не задан client_endpoint (публичный адрес сервера) — добавь его в config.json и перезапусти сервис")
+	}
+
+	confText, err := dockerExec(cfg.Container, "cat", cfg.WgConfPath)
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось прочитать %s: %w (%s)", cfg.WgConfPath, err, confText)
+	}
+
+	oldPeer, ok := findPeerByIP(confText, ip)
+	if !ok {
+		return ReissueResponse{}, fmt.Errorf("пир с IP %s не найден в %s", ip, cfg.WgConfPath)
+	}
+	ifaceParams := parseWgConfInterface(confText)
+
+	serverPubOut, err := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface, "public-key")
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось получить публичный ключ сервера: %w (%s)", err, serverPubOut)
+	}
+	serverPub := strings.TrimSpace(serverPubOut)
+
+	newPrivOut, err := dockerExec(cfg.Container, "wg", "genkey")
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось сгенерировать новый приватный ключ: %w (%s)", err, newPrivOut)
+	}
+	newPriv := strings.TrimSpace(newPrivOut)
+
+	newPubOut, err := dockerExecStdin(cfg.Container, newPriv+"\n", "wg", "pubkey")
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось вычислить публичный ключ: %w (%s)", err, newPubOut)
+	}
+	newPub := strings.TrimSpace(newPubOut)
+
+	// 1) применяем изменение "живьём", без разрыва остальных пиров
+	if out, err := dockerExec(cfg.Container, "wg", "set", cfg.WgInterface, "peer", oldPeer.PublicKey, "remove"); err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось удалить старый пир из живого интерфейса: %w (%s)", err, out)
+	}
+	if out, err := dockerExecStdin(cfg.Container, oldPeer.PresharedKey+"\n",
+		"wg", "set", cfg.WgInterface, "peer", newPub, "preshared-key", "/dev/stdin", "allowed-ips", ip+"/32"); err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось добавить новый пир в живой интерфейс: %w (%s)", err, out)
+	}
+
+	// 2) сохраняем изменение на диск, чтобы оно пережило перезапуск контейнера
+	newConfText := strings.Replace(confText, "PublicKey = "+oldPeer.PublicKey, "PublicKey = "+newPub, 1)
+	if err := dockerWriteFile(cfg.Container, cfg.WgConfPath, newConfText); err != nil {
+		return ReissueResponse{}, fmt.Errorf("живой интерфейс обновлён, НО не удалось сохранить %s на диске — при перезапуске контейнера изменение потеряется: %w", cfg.WgConfPath, err)
+	}
+
+	// 3) переносим clientId в clientsTable на новый ключ, чтобы имя не потерялось
+	name, err := updateClientIDInTable(cfg, ip, newPub)
+	if err != nil {
+		log.Printf("перевыпуск %s: живой интерфейс и wg0.conf обновлены, но clientsTable — нет: %v", ip, err)
+	}
+	if name == "" {
+		name = "—"
+	}
+
+	confOut := buildClientConfig(newPriv, ip, cfg, ifaceParams, serverPub, oldPeer.PresharedKey)
+
+	png, err := qrcode.Encode(confOut, qrcode.Medium, 512)
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("конфиг перевыпущен, но не удалось сгенерировать QR-код: %w", err)
+	}
+
+	return ReissueResponse{
+		IP:          ip,
+		Name:        name,
+		Filename:    sanitizeFilename(name) + ".conf",
+		ConfigText:  confOut,
+		QRPngBase64: base64.StdEncoding.EncodeToString(png),
+	}, nil
+}
+
 func dockerExec(container string, args ...string) (string, error) {
 	full := append([]string{"exec", container}, args...)
 	cmd := exec.Command("docker", full...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// dockerExecStdin — то же самое, но с передачей данных на стандартный ввод
+// команды внутри контейнера (нужно для "wg pubkey", "wg set ... preshared-key
+// /dev/stdin" и записи файлов через "cat > path").
+func dockerExecStdin(container, stdin string, args ...string) (string, error) {
+	full := append([]string{"exec", "-i", container}, args...)
+	cmd := exec.Command("docker", full...)
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// dockerWriteFile перезаписывает файл внутри контейнера целиком.
+func dockerWriteFile(container, path, content string) error {
+	out, err := dockerExecStdin(container, content, "sh", "-c", "cat > "+shellQuote(path))
+	if err != nil {
+		return fmt.Errorf("%w (%s)", err, out)
+	}
+	return nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func fetchClients(cfg config.Config) ([]ClientEntry, error) {
@@ -420,6 +698,20 @@ func main() {
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+
+		api.POST("/users/:ip/reissue", func(c *gin.Context) {
+			ip := c.Param("ip")
+			if !ipOnlyRe.MatchString(ip) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "некорректный IP"})
+				return
+			}
+			resp, err := reissueClient(cfg, ip)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, resp)
 		})
 	}
 
