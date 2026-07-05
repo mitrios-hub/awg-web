@@ -17,6 +17,7 @@
     themeToggle: document.getElementById("themeToggle"),
     fetchedAt: document.getElementById("fetchedAt"),
     containerName: document.getElementById("containerName"),
+    appVersion: document.getElementById("appVersion"),
     searchInput: document.getElementById("searchInput"),
     statusFilter: document.getElementById("statusFilter"),
     includeNeverToggle: document.getElementById("includeNeverToggle"),
@@ -71,6 +72,7 @@
       state.summary = data.summary || null;
       state.fetchedAt = data.fetchedAt || null;
       els.containerName.textContent = "контейнер: " + (data.container || "—");
+      els.appVersion.textContent = data.version ? "v" + data.version : "";
       render();
     } catch (e) {
       els.tableBody.innerHTML =
