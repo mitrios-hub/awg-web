@@ -186,7 +186,40 @@ func findPeerByIP(conf, ip string) (confPeer, bool) {
 	return confPeer{}, false
 }
 
-func buildClientConfig(priv, ip string, cfg config.Config, p wgInterfaceParams, serverPub, psk string) string {
+// resolveClientEndpoint возвращает host:port для клиентского конфига.
+// Если в конфиге client_endpoint уже указан с портом ("1.2.3.4:35357") —
+// используется как есть. Если указан только хост ("1.2.3.4") — порт
+// определяется автоматически через "docker port", чтобы не дублировать
+// его вручную и не рассинхронизироваться при изменении ListenPort.
+var dockerPortRe = regexp.MustCompile(`->\s*[\d.:a-fA-F\[\]]+:(\d+)\s*$`)
+
+func resolveClientEndpoint(cfg config.Config) (string, error) {
+	if cfg.ClientEndpoint == "" {
+		return "", fmt.Errorf("client_endpoint не задан в конфиге")
+	}
+	if strings.Contains(cfg.ClientEndpoint, ":") {
+		return cfg.ClientEndpoint, nil
+	}
+
+	out, err := exec.Command("docker", "port", cfg.Container).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("client_endpoint указан без порта (%q), а автоопределение через 'docker port' не удалось: %w (%s)",
+			cfg.ClientEndpoint, err, out)
+	}
+	var port string
+	for _, line := range strings.Split(string(out), "\n") {
+		if m := dockerPortRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			port = m[1]
+			break
+		}
+	}
+	if port == "" {
+		return "", fmt.Errorf("client_endpoint указан без порта, но не удалось разобрать вывод 'docker port %s': %s", cfg.Container, out)
+	}
+	return cfg.ClientEndpoint + ":" + port, nil
+}
+
+func buildClientConfig(priv, ip string, cfg config.Config, p wgInterfaceParams, serverPub, psk, endpoint string) string {
 	dns := cfg.ClientDNS
 	if dns == "" {
 		dns = "1.1.1.1, 1.0.0.1"
@@ -204,7 +237,7 @@ func buildClientConfig(priv, ip string, cfg config.Config, p wgInterfaceParams, 
 	fmt.Fprintf(&b, "PublicKey = %s\n", serverPub)
 	fmt.Fprintf(&b, "PresharedKey = %s\n", psk)
 	b.WriteString("AllowedIPs = 0.0.0.0/0, ::/0\n")
-	fmt.Fprintf(&b, "Endpoint = %s\n", cfg.ClientEndpoint)
+	fmt.Fprintf(&b, "Endpoint = %s\n", endpoint)
 	b.WriteString("PersistentKeepalive = 25\n")
 	return b.String()
 }
@@ -221,9 +254,11 @@ func sanitizeFilename(name string) string {
 }
 
 // updateClientIDInTable переносит clientId (=публичный ключ) на новый в
-// clientsTable, чтобы имя клиента осталось привязано к тому же IP. Если
-// записи не было вовсе (orphan-пир) — создаёт новую с этим IP.
-func updateClientIDInTable(cfg config.Config, ip, newPub string) (string, error) {
+// clientsTable, чтобы имя клиента осталось привязано к тому же клиенту.
+// Ищем по СТАРОМУ публичному ключу, а не по IP — у части клиентов в
+// clientsTable вообще нет поля allowedIps (см. случаи вида timur01/02/03),
+// а clientId есть всегда.
+func updateClientIDInTable(cfg config.Config, oldPub, ip, newPub string) (string, error) {
 	raw, err := dockerExec(cfg.Container, "cat", cfg.ClientsTablePath)
 	if err != nil {
 		return "", fmt.Errorf("не удалось прочитать clientsTable: %w (%s)", err, raw)
@@ -236,8 +271,7 @@ func updateClientIDInTable(cfg config.Config, ip, newPub string) (string, error)
 	name := ""
 	found := false
 	for i := range entries {
-		entryIP := strings.SplitN(entries[i].UserData.AllowedIps, "/", 2)[0]
-		if entryIP == ip {
+		if entries[i].ClientID == oldPub {
 			entries[i].ClientID = newPub
 			name = entries[i].UserData.ClientName
 			found = true
@@ -267,11 +301,13 @@ type ReissueResponse struct {
 	Filename    string `json:"filename"`
 	ConfigText  string `json:"configText"`
 	QRPngBase64 string `json:"qrPngBase64"`
+	Warning     string `json:"warning,omitempty"`
 }
 
 func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
-	if cfg.ClientEndpoint == "" {
-		return ReissueResponse{}, fmt.Errorf("в конфиге не задан client_endpoint (публичный адрес сервера) — добавь его в config.json и перезапусти сервис")
+	endpoint, err := resolveClientEndpoint(cfg)
+	if err != nil {
+		return ReissueResponse{}, err
 	}
 
 	confText, err := dockerExec(cfg.Container, "cat", cfg.WgConfPath)
@@ -284,6 +320,14 @@ func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
 		return ReissueResponse{}, fmt.Errorf("пир с IP %s не найден в %s", ip, cfg.WgConfPath)
 	}
 	ifaceParams := parseWgConfInterface(confText)
+	var warning string
+	if ifaceParams.Jc == "" {
+		warning = "В секции [Interface] файла " + cfg.WgConfPath + " не найдены параметры обфускации " +
+			"(Jc/Jmin/Jmax/S1/S2/H1-H4). Сгенерированный конфиг будет без них — если версия AmneziaWG " +
+			"на сервере их требует, клиент может не подключиться. Обычно это значит, что wg0.conf " +
+			"устарел относительно версии приложения — стоит свериться с актуальным форматом конфига " +
+			"после обновления контейнера amnezia-awg."
+	}
 
 	serverPubOut, err := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface, "public-key")
 	if err != nil {
@@ -303,23 +347,28 @@ func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
 	}
 	newPub := strings.TrimSpace(newPubOut)
 
-	// 1) применяем изменение "живьём", без разрыва остальных пиров
-	if out, err := dockerExec(cfg.Container, "wg", "set", cfg.WgInterface, "peer", oldPeer.PublicKey, "remove"); err != nil {
-		return ReissueResponse{}, fmt.Errorf("не удалось удалить старый пир из живого интерфейса: %w (%s)", err, out)
-	}
-	if out, err := dockerExecStdin(cfg.Container, oldPeer.PresharedKey+"\n",
-		"wg", "set", cfg.WgInterface, "peer", newPub, "preshared-key", "/dev/stdin", "allowed-ips", ip+"/32"); err != nil {
-		return ReissueResponse{}, fmt.Errorf("не удалось добавить новый пир в живой интерфейс: %w (%s)", err, out)
-	}
-
-	// 2) сохраняем изменение на диск, чтобы оно пережило перезапуск контейнера
+	// 1) сохраняем новый публичный ключ в конфиг на диске
 	newConfText := strings.Replace(confText, "PublicKey = "+oldPeer.PublicKey, "PublicKey = "+newPub, 1)
 	if err := dockerWriteFile(cfg.Container, cfg.WgConfPath, newConfText); err != nil {
-		return ReissueResponse{}, fmt.Errorf("живой интерфейс обновлён, НО не удалось сохранить %s на диске — при перезапуске контейнера изменение потеряется: %w", cfg.WgConfPath, err)
+		return ReissueResponse{}, fmt.Errorf("не удалось сохранить %s: %w", cfg.WgConfPath, err)
+	}
+
+	// 2) применяем изменение "живьём" через wg syncconf — он атомарно
+	// сверяет живое состояние интерфейса с файлом и накатывает только
+	// разницу, не трогая остальных пиров. Это надёжнее, чем ручные
+	// "wg set ... remove/add": по опыту, ручной способ иногда не
+	// применялся до перезапуска контейнера, а syncconf — штатный путь
+	// именно для "перечитать конфиг без даунтайма".
+	syncCmd := fmt.Sprintf("wg syncconf %s <(wg-quick strip %s)", cfg.WgInterface, cfg.WgConfPath)
+	if out, err := dockerExec(cfg.Container, "bash", "-c", syncCmd); err != nil {
+		return ReissueResponse{}, fmt.Errorf(
+			"новый ключ сохранён в %s, но не удалось применить его живьём через wg syncconf: %w (%s). "+
+				"Изменение вступит в силу при следующем перезапуске контейнера amnezia-awg",
+			cfg.WgConfPath, err, out)
 	}
 
 	// 3) переносим clientId в clientsTable на новый ключ, чтобы имя не потерялось
-	name, err := updateClientIDInTable(cfg, ip, newPub)
+	name, err := updateClientIDInTable(cfg, oldPeer.PublicKey, ip, newPub)
 	if err != nil {
 		log.Printf("перевыпуск %s: живой интерфейс и wg0.conf обновлены, но clientsTable — нет: %v", ip, err)
 	}
@@ -327,7 +376,7 @@ func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
 		name = "—"
 	}
 
-	confOut := buildClientConfig(newPriv, ip, cfg, ifaceParams, serverPub, oldPeer.PresharedKey)
+	confOut := buildClientConfig(newPriv, ip, cfg, ifaceParams, serverPub, oldPeer.PresharedKey, endpoint)
 
 	png, err := qrcode.Encode(confOut, qrcode.Medium, 512)
 	if err != nil {
@@ -340,6 +389,7 @@ func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
 		Filename:    sanitizeFilename(name) + ".conf",
 		ConfigText:  confOut,
 		QRPngBase64: base64.StdEncoding.EncodeToString(png),
+		Warning:     warning,
 	}, nil
 }
 
@@ -386,44 +436,105 @@ func fetchClients(cfg config.Config) ([]ClientEntry, error) {
 	return entries, nil
 }
 
-// wgPeer — сырые данные из "wg show <if> dump" по одному пиру.
-type wgPeer struct {
-	endpoint string
-	hsEpoch  int64
+// wgPeerInfo — данные одного пира из человекочитаемого "wg show <if>".
+// Этот формат (в отличие от машинного "wg show <if> dump") устойчив к
+// дополнительным полям обфускации AmneziaWG: каждая строка подписана
+// ("endpoint:", "allowed ips:", "latest handshake:"), поэтому не важно,
+// сколько всего полей и в каком порядке — ломаться нечему.
+type wgPeerInfo struct {
+	AllowedIPs    string
+	Endpoint      string
+	HandshakeText string // как есть от wg, например "4 minutes, 30 seconds ago"; пусто, если рукопожатий не было
 }
 
-func fetchWgDump(cfg config.Config) (map[string]wgPeer, error) {
-	out, err := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface, "dump")
-	result := map[string]wgPeer{}
+var peerHeaderRe = regexp.MustCompile(`^peer:\s*(\S+)`)
+
+func fetchWgShow(cfg config.Config) (map[string]wgPeerInfo, error) {
+	out, err := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface)
+	result := map[string]wgPeerInfo{}
 	if err != nil {
-		// Не фатально: без wg-интерфейса просто не будет endpoint'ов.
+		// Не фатально: без живого интерфейса просто не будет live-данных.
 		return result, nil
 	}
 
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) <= 1 {
-		return result, nil
+	var curKey string
+	var cur wgPeerInfo
+	flush := func() {
+		if curKey != "" {
+			result[curKey] = cur
+		}
 	}
-	// первая строка — сам интерфейс, пропускаем
-	for _, line := range lines[1:] {
-		fields := strings.Split(line, "\t")
-		if len(fields) < 5 {
-			continue
-		}
-		endpoint := fields[2]
-		allowedIps := fields[3]
-		ip := strings.SplitN(strings.SplitN(allowedIps, ",", 2)[0], "/", 2)[0]
-		if ip == "" {
-			continue
-		}
-		hs, _ := strconv.ParseInt(fields[4], 10, 64)
 
-		// при дублях IP в дампе — оставляем запись с более свежим handshake
-		if existing, ok := result[ip]; !ok || hs > existing.hsEpoch {
-			result[ip] = wgPeer{endpoint: endpoint, hsEpoch: hs}
+	for _, line := range strings.Split(out, "\n") {
+		if m := peerHeaderRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			flush()
+			curKey = m[1]
+			cur = wgPeerInfo{}
+			continue
+		}
+		if curKey == "" {
+			continue // ещё не дошли до первого "peer:" — это блок "interface:"
+		}
+		t := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(t, "endpoint:"):
+			cur.Endpoint = strings.TrimSpace(strings.TrimPrefix(t, "endpoint:"))
+		case strings.HasPrefix(t, "allowed ips:"):
+			cur.AllowedIPs = strings.TrimSpace(strings.TrimPrefix(t, "allowed ips:"))
+		case strings.HasPrefix(t, "latest handshake:"):
+			cur.HandshakeText = strings.TrimSpace(strings.TrimPrefix(t, "latest handshake:"))
 		}
 	}
+	flush()
 	return result, nil
+}
+
+// translateHandshakeRu переводит английские единицы времени из вывода wg
+// ("4 minutes, 30 seconds ago") на русский, для единообразия с остальным
+// интерфейсом. Если паттерн не распознан — возвращает как есть (лучше
+// показать по-английски, чем ничего).
+var handshakeWordRe = regexp.MustCompile(`\b(seconds?|minutes?|hours?|days?|weeks?|months?|years?|ago)\b`)
+
+var handshakeWordMap = map[string]string{
+	"second": "сек", "seconds": "сек",
+	"minute": "мин", "minutes": "мин",
+	"hour": "ч", "hours": "ч",
+	"day": "дн", "days": "дн",
+	"week": "нед", "weeks": "нед",
+	"month": "мес", "months": "мес",
+	"year": "г", "years": "г",
+	"ago": "назад",
+}
+
+func translateHandshakeRu(s string) string {
+	return handshakeWordRe.ReplaceAllStringFunc(s, func(w string) string {
+		if v, ok := handshakeWordMap[w]; ok {
+			return v
+		}
+		return w
+	})
+}
+
+// isRecentHandshake — грубая эвристика "живой прямо сейчас" по тексту от
+// wg (часы/дни/недели — не недавно; минуты — недавно, если меньше 3;
+// только секунды — точно недавно).
+func isRecentHandshake(text string) bool {
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, "day") || strings.Contains(text, "week") ||
+		strings.Contains(text, "month") || strings.Contains(text, "year") || strings.Contains(text, "hour") {
+		return false
+	}
+	if strings.Contains(text, "minute") {
+		m := regexp.MustCompile(`(\d+)\s*minute`).FindStringSubmatch(text)
+		if m == nil {
+			return false
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n < 3
+	}
+	return strings.Contains(text, "second")
 }
 
 func fetchBlockedSet(cfg config.Config) (map[string]bool, error) {
@@ -441,14 +552,19 @@ func fetchBlockedSet(cfg config.Config) (map[string]bool, error) {
 	return blocked, nil
 }
 
-// buildUsers собирает единый список пользователей из трёх источников,
-// в точности повторяя логику bash-версии скрипта.
+// buildUsers собирает единый список пользователей. Ключ сопоставления —
+// ПУБЛИЧНЫЙ КЛЮЧ (clientId в clientsTable = "peer:" в wg show), а не IP:
+// у части клиентов (замечено на новых записях вида timur01/02/03)
+// clientsTable вообще не содержит поле allowedIps, поэтому сопоставление
+// по IP молча теряло таких пользователей. IP/endpoint/последний handshake
+// берутся из живого "wg show <if>" — он не зависит от того, обновляет ли
+// сама Amnezia clientsTable вовремя (а она, судя по всему, не всегда).
 func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error) {
 	clients, err := fetchClients(cfg)
 	if err != nil {
 		return UsersResponse{}, err
 	}
-	wgPeers, err := fetchWgDump(cfg)
+	wgPeers, err := fetchWgShow(cfg)
 	if err != nil {
 		return UsersResponse{}, err
 	}
@@ -457,57 +573,72 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 		return UsersResponse{}, err
 	}
 
-	nameByIP := map[string]string{}
-	hsStrByIP := map[string]string{}
-	knownIPs := map[string]bool{}
+	nameByKey := map[string]string{}
+	knownKeys := map[string]bool{}
 
 	for _, c := range clients {
-		ip := strings.SplitN(c.UserData.AllowedIps, "/", 2)[0]
-		if ip == "" {
+		if c.ClientID == "" {
 			continue
 		}
-		knownIPs[ip] = true
+		knownKeys[c.ClientID] = true
 		if c.UserData.ClientName != "" {
-			nameByIP[ip] = c.UserData.ClientName
-		}
-		if c.UserData.LatestHandshake != "" {
-			hsStrByIP[ip] = c.UserData.LatestHandshake
+			nameByKey[c.ClientID] = c.UserData.ClientName
 		}
 	}
-	for ip := range wgPeers {
-		knownIPs[ip] = true
+	for pub := range wgPeers {
+		knownKeys[pub] = true
 	}
 
-	ips := make([]string, 0, len(knownIPs))
-	for ip := range knownIPs {
-		ips = append(ips, ip)
+	keys := make([]string, 0, len(knownKeys))
+	for k := range knownKeys {
+		keys = append(keys, k)
 	}
-	sort.Slice(ips, func(i, j int) bool { return ipLess(ips[i], ips[j]) })
+	sort.Strings(keys)
 
-	users := make([]User, 0, len(ips))
+	users := make([]User, 0, len(keys))
 	summary := Summary{}
 	num := 0
 
-	for _, ip := range ips {
-		name := nameByIP[ip]
+	for _, key := range keys {
+		peer, haveLive := wgPeers[key]
+
+		ip := ""
+		if haveLive {
+			ip = strings.SplitN(strings.SplitN(peer.AllowedIPs, ",", 2)[0], "/", 2)[0]
+		}
+		if ip == "" {
+			// запасной путь: вдруг это старая запись, где allowedIps есть
+			// только в clientsTable (обратная совместимость)
+			for _, c := range clients {
+				if c.ClientID == key && c.UserData.AllowedIps != "" {
+					ip = strings.SplitN(c.UserData.AllowedIps, "/", 2)[0]
+					break
+				}
+			}
+		}
+		if ip == "" {
+			// негде взять IP вообще — показать нечего, пропускаем
+			continue
+		}
+
+		name := nameByKey[key]
 		if name == "" {
 			name = "—"
 		}
 
 		endpoint := "N/A"
-		if p, ok := wgPeers[ip]; ok {
-			endpoint = p.endpoint
-		}
-
-		var handshake string
-		neverSeen := false
-		if hs, ok := hsStrByIP[ip]; ok {
-			handshake = hs
-		} else if p, ok := wgPeers[ip]; ok && p.hsEpoch > 0 {
-			handshake = time.Unix(p.hsEpoch, 0).Format("2006-01-02 15:04:05")
-		} else {
-			handshake = "никогда"
-			neverSeen = true
+		handshake := "никогда"
+		neverSeen := true
+		recentlyActive := false
+		if haveLive {
+			if peer.Endpoint != "" {
+				endpoint = peer.Endpoint
+			}
+			if peer.HandshakeText != "" {
+				handshake = translateHandshakeRu(peer.HandshakeText)
+				neverSeen = false
+				recentlyActive = isRecentHandshake(peer.HandshakeText)
+			}
 		}
 
 		if neverSeen && !includeNeverSeen {
@@ -516,13 +647,6 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 
 		num++
 		isBlocked := blocked[ip]
-
-		recentlyActive := false
-		if p, ok := wgPeers[ip]; ok && p.hsEpoch > 0 {
-			if time.Since(time.Unix(p.hsEpoch, 0)) <= 3*time.Minute {
-				recentlyActive = true
-			}
-		}
 
 		summary.Total++
 		if isBlocked {
@@ -544,6 +668,11 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 			Blocked:        isBlocked,
 			RecentlyActive: recentlyActive,
 		})
+	}
+
+	sort.Slice(users, func(i, j int) bool { return ipLess(users[i].IP, users[j].IP) })
+	for i := range users {
+		users[i].Num = i + 1
 	}
 
 	return UsersResponse{
