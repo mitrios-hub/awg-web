@@ -73,6 +73,11 @@ type User struct {
 	RecentlyActive bool   `json:"recentlyActive"`
 }
 
+// AppVersion — версия панели. Обновляется вручную при значимых изменениях,
+// чтобы можно было визуально свериться (в шапке панели), что деплой на
+// сервере реально подтянул актуальный код после git pull + пересборки.
+const AppVersion = "0.5"
+
 type Summary struct {
 	Total     int `json:"total"`
 	Active    int `json:"active"`
@@ -85,6 +90,7 @@ type UsersResponse struct {
 	Summary   Summary   `json:"summary"`
 	FetchedAt time.Time `json:"fetchedAt"`
 	Container string    `json:"container"`
+	Version   string    `json:"version"`
 }
 
 // ===================== СБОР ДАННЫХ =====================
@@ -680,6 +686,7 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 		Summary:   summary,
 		FetchedAt: time.Now(),
 		Container: cfg.Container,
+		Version:   AppVersion,
 	}, nil
 }
 
