@@ -53,7 +53,7 @@
     el.className = "toast" + (isError ? " toast--error" : "");
     el.textContent = message;
     els.toastStack.appendChild(el);
-    setTimeout(() => el.remove(), 4000);
+    setTimeout(() => el.remove(), isError ? 8000 : 4000);
   }
 
   async function loadUsers() {
@@ -231,6 +231,9 @@
       els.reissueQr.src = "data:image/png;base64," + data.qrPngBase64;
       els.reissueOverlay.classList.add("is-open");
       showToast("Клиент перевыпущен", false);
+      if (data.warning) {
+        showToast(data.warning, true);
+      }
       loadUsers(); // clientId сменился — подтягиваем актуальные данные
     } catch (e) {
       showToast("Не удалось перевыпустить: " + e.message, true);
