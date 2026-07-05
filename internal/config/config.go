@@ -16,6 +16,20 @@ type Config struct {
 	Container        string `json:"container"`
 	WgInterface      string `json:"wg_interface"`
 	ClientsTablePath string `json:"clients_table_path"`
+	// WgConfPath — путь к файлу конфигурации интерфейса (wg0.conf) внутри
+	// контейнера. Нужен для функции "Перевыпустить" — оттуда читаются
+	// параметры обфускации (Jc/Jmin/Jmax/S1/S2/H1-H4) и куда пишется новый
+	// публичный ключ пира при перевыпуске.
+	WgConfPath string `json:"wg_conf_path"`
+
+	// ClientEndpoint — публичный адрес сервера (host:port), который
+	// прописывается в генерируемых клиентских конфигах как Endpoint.
+	// Сервер не может определить это сам (изнутри контейнера не видно
+	// собственного публичного IP), поэтому задаётся явно. Без этого поля
+	// функция "Перевыпустить" работать не будет.
+	ClientEndpoint string `json:"client_endpoint"`
+	// ClientDNS — DNS-серверы, прописываемые в генерируемый конфиг клиента.
+	ClientDNS string `json:"client_dns"`
 
 	AuthUser string `json:"auth_user"`
 	// AuthPassHash — bcrypt-хэш пароля. НЕ хранит пароль в открытом виде.
@@ -36,6 +50,8 @@ func DefaultConfig() Config {
 		Container:        "amnezia-awg",
 		WgInterface:      "wg0",
 		ClientsTablePath: "/opt/amnezia/awg/clientsTable",
+		WgConfPath:       "/opt/amnezia/awg/wg0.conf",
+		ClientDNS:        "1.1.1.1, 1.0.0.1",
 		AuthUser:         "admin",
 	}
 }
