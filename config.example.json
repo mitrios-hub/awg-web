@@ -4,7 +4,7 @@
   "wg_interface": "wg0",
   "clients_table_path": "/opt/amnezia/awg/clientsTable",
   "wg_conf_path": "/opt/amnezia/awg/wg0.conf",
-  "client_endpoint": "203.0.113.10:35357",
+  "client_endpoint": "URL:PORT",
   "client_dns": "1.1.1.1, 1.0.0.1",
   "auth_user": "admin",
   "auth_pass_hash": "",
