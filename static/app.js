@@ -1,6 +1,5 @@
-// awg-web — фронтенд. Данные загружаются ТОЛЬКО по явному действию:
-// при первой загрузке страницы и по кнопке "Обновить" — никакого
-// автообновления по таймеру, как и в исходном bash-скрипте.
+// awg-web — фронтенд. Данные загружаются по явному действию (кнопка
+// "Обновить") либо, если включён чекбокс "Авто (10с)", по таймеру.
 
 (() => {
   const state = {
@@ -10,10 +9,15 @@
     includeNever: false,
     search: "",
     statusFilter: "all", // "all" | "active" | "blocked"
+    autoRefresh: false,
+    autoRefreshTimer: null,
   };
+
+  const AUTO_REFRESH_MS = 10000;
 
   const els = {
     refreshBtn: document.getElementById("refreshBtn"),
+    autoRefreshToggle: document.getElementById("autoRefreshToggle"),
     themeToggle: document.getElementById("themeToggle"),
     fetchedAt: document.getElementById("fetchedAt"),
     containerName: document.getElementById("containerName"),
@@ -40,6 +44,32 @@
     reissueCopy: document.getElementById("reissueCopy"),
     reissueClose: document.getElementById("reissueClose"),
   };
+
+  // ---- автообновление по таймеру (10 сек) ----
+  function stopAutoRefresh() {
+    if (state.autoRefreshTimer) {
+      clearInterval(state.autoRefreshTimer);
+      state.autoRefreshTimer = null;
+    }
+  }
+
+  function startAutoRefresh() {
+    stopAutoRefresh();
+    state.autoRefreshTimer = setInterval(() => {
+      if (document.hidden) return; // не грузим сервер, пока вкладка не активна
+      loadUsers();
+    }, AUTO_REFRESH_MS);
+  }
+
+  function setAutoRefresh(enabled) {
+    state.autoRefresh = enabled;
+    localStorage.setItem("awg-autorefresh", enabled ? "1" : "0");
+    if (enabled) {
+      startAutoRefresh();
+    } else {
+      stopAutoRefresh();
+    }
+  }
 
   function escapeHtml(s) {
     return String(s)
@@ -332,6 +362,22 @@
     state.includeNever = e.target.checked;
     loadUsers();
   });
+  els.autoRefreshToggle.addEventListener("change", (e) => {
+    setAutoRefresh(e.target.checked);
+  });
+  document.addEventListener("visibilitychange", () => {
+    // при возврате на вкладку сразу подтягиваем свежие данные,
+    // если автообновление включено
+    if (!document.hidden && state.autoRefresh) {
+      loadUsers();
+    }
+  });
+
+  // восстановление сохранённого состояния автообновления
+  if (localStorage.getItem("awg-autorefresh") === "1") {
+    els.autoRefreshToggle.checked = true;
+    setAutoRefresh(true);
+  }
 
   // первичная загрузка при открытии страницы
   loadUsers();
