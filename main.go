@@ -76,7 +76,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "0.5"
+const AppVersion = "0.6"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -647,6 +647,13 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 			}
 		}
 
+		// "Никогда не подключавшиеся" считаем всегда — счётчик в карточке
+		// должен показывать их реальное количество независимо от того,
+		// включены ли они в видимый список (галочка includeNeverSeen).
+		if neverSeen {
+			summary.NeverSeen++
+		}
+
 		if neverSeen && !includeNeverSeen {
 			continue
 		}
@@ -659,9 +666,6 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 			summary.Blocked++
 		} else {
 			summary.Active++
-		}
-		if neverSeen {
-			summary.NeverSeen++
 		}
 
 		users = append(users, User{
