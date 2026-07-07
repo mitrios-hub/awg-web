@@ -11,6 +11,9 @@
     statusFilter: "all", // "all" | "active" | "blocked"
     autoRefresh: false,
     autoRefreshTimer: null,
+    rowElements: new Map(),   // ip -> <tr> (для точечного обновления без перерисовки всей таблицы)
+    rowSignatures: new Map(), // ip -> сигнатура последнего отрисованного состояния строки
+    statSnapshot: { total: null, active: null, blocked: null, never: null },
   };
 
   const AUTO_REFRESH_MS = 10000;
@@ -79,6 +82,16 @@
       .replace(/"/g, "&quot;");
   }
 
+  // короткая подсветка элемента, чтобы визуально показать, что значение
+  // обновилось "живьём", без полной перерисовки экрана
+  function flashElement(el) {
+    if (!el) return;
+    el.classList.remove("flash-update");
+    // перезапуск CSS-анимации: убрать класс, дождаться reflow, добавить снова
+    void el.offsetWidth;
+    el.classList.add("flash-update");
+  }
+
   function showToast(message, isError) {
     const el = document.createElement("div");
     el.className = "toast" + (isError ? " toast--error" : "");
@@ -88,8 +101,13 @@
   }
 
   async function loadUsers() {
+    const hasData = state.rowElements.size > 0;
     els.refreshBtn.disabled = true;
-    els.tableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Загрузка…</td></tr>';
+    // "Загрузка…" показываем только при первой загрузке —
+    // если данные уже на экране, оставляем их видимыми до прихода ответа
+    if (!hasData) {
+      els.tableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Загрузка…</td></tr>';
+    }
     try {
       const url = "/api/users?includeNever=" + (state.includeNever ? "true" : "false");
       const res = await fetch(url, { credentials: "same-origin" });
@@ -105,21 +123,32 @@
       els.appVersion.textContent = data.version ? "v" + data.version : "";
       render();
     } catch (e) {
-      els.tableBody.innerHTML =
-        '<tr><td colspan="7" class="empty-state">Не удалось загрузить данные: ' +
-        escapeHtml(e.message) + "</td></tr>";
+      if (!hasData) {
+        els.tableBody.innerHTML =
+          '<tr><td colspan="7" class="empty-state">Не удалось загрузить данные: ' +
+          escapeHtml(e.message) + "</td></tr>";
+      }
       showToast("Ошибка загрузки: " + e.message, true);
     } finally {
       els.refreshBtn.disabled = false;
     }
   }
 
+  function rowSignature(u) {
+    return JSON.stringify([
+      u.num, u.name, u.ip, u.endpoint, u.handshake,
+      u.blocked, u.recentlyActive, u.neverSeen,
+    ]);
+  }
+
   function render() {
     if (state.summary) {
-      els.statTotal.textContent = state.summary.total;
-      els.statActive.textContent = state.summary.active;
-      els.statBlocked.textContent = state.summary.blocked;
-      els.statNever.textContent = state.summary.neverSeen;
+      const s = state.summary;
+      const snap = state.statSnapshot;
+      if (snap.total !== s.total) { els.statTotal.textContent = s.total; flashElement(els.statTotal); snap.total = s.total; }
+      if (snap.active !== s.active) { els.statActive.textContent = s.active; flashElement(els.statActive); snap.active = s.active; }
+      if (snap.blocked !== s.blocked) { els.statBlocked.textContent = s.blocked; flashElement(els.statBlocked); snap.blocked = s.blocked; }
+      if (snap.never !== s.neverSeen) { els.statNever.textContent = s.neverSeen; flashElement(els.statNever); snap.never = s.neverSeen; }
     }
     if (state.fetchedAt) {
       const d = new Date(state.fetchedAt);
@@ -138,20 +167,64 @@
     });
 
     if (filtered.length === 0) {
-      els.tableBody.innerHTML =
-        '<tr><td colspan="7" class="empty-state">Никого не найдено</td></tr>';
+      els.tableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Никого не найдено</td></tr>';
+      state.rowElements.clear();
+      state.rowSignatures.clear();
       return;
     }
 
-    els.tableBody.innerHTML = filtered.map(rowHtml).join("");
+    // если в tbody сейчас служебная строка (загрузка/ошибка/"не найдено"),
+    // а не реальные строки пиров — очищаем перед первой отрисовкой
+    if (state.rowElements.size === 0 &&
+        els.tableBody.firstElementChild &&
+        !els.tableBody.firstElementChild.dataset.ip) {
+      els.tableBody.innerHTML = "";
+    }
 
-    // навешиваем обработчики на кнопки действий
-    els.tableBody.querySelectorAll("[data-action]").forEach((btn) => {
-      btn.addEventListener("click", onActionClick);
+    const seen = new Set();
+    let prevNode = null;
+
+    filtered.forEach((u) => {
+      seen.add(u.ip);
+      const sig = rowSignature(u);
+      let tr = state.rowElements.get(u.ip);
+
+      if (!tr) {
+        tr = document.createElement("tr");
+        tr.dataset.ip = u.ip;
+        tr.innerHTML = rowCellsHtml(u);
+        state.rowElements.set(u.ip, tr);
+      } else if (state.rowSignatures.get(u.ip) !== sig) {
+        // содержимое строки изменилось (статус, хендшейк, имя…) — обновляем
+        // только эту строку, остальная таблица не трогается, и коротко
+        // подсвечиваем её, чтобы обновление было заметно "живым"
+        tr.innerHTML = rowCellsHtml(u);
+        flashElement(tr);
+      }
+      state.rowSignatures.set(u.ip, sig);
+
+      // строка уже стоит на нужном месте — DOM не трогаем вовсе
+      if (tr.previousElementSibling !== prevNode) {
+        if (prevNode === null) {
+          els.tableBody.insertBefore(tr, els.tableBody.firstChild);
+        } else {
+          prevNode.after(tr);
+        }
+      }
+      prevNode = tr;
     });
+
+    // убираем строки пользователей, которых больше нет в текущей выборке
+    for (const [ip, tr] of state.rowElements) {
+      if (!seen.has(ip)) {
+        tr.remove();
+        state.rowElements.delete(ip);
+        state.rowSignatures.delete(ip);
+      }
+    }
   }
 
-  function rowHtml(u) {
+  function rowCellsHtml(u) {
     const nameClass = u.name === "—" ? "name-cell name-cell--empty" : "name-cell";
     const hsClass = u.neverSeen ? "hs-cell hs-cell--never" : "hs-cell";
 
@@ -185,20 +258,17 @@
     }
 
     return (
-      "<tr>" +
       '<td class="col-num">' + u.num + "</td>" +
       '<td class="' + nameClass + '">' + escapeHtml(u.name) + "</td>" +
       '<td class="ip-cell">' + escapeHtml(u.ip) + "</td>" +
       '<td class="endpoint-cell">' + escapeHtml(u.endpoint) + "</td>" +
       '<td class="' + hsClass + '">' + escapeHtml(u.handshake) + "</td>" +
       "<td>" + statusHtml + "</td>" +
-      '<td class="col-action">' + actionHtml + "</td>" +
-      "</tr>"
+      '<td class="col-action">' + actionHtml + "</td>"
     );
   }
 
-  function onActionClick(e) {
-    const btn = e.currentTarget;
+  function onActionClick(btn) {
     const action = btn.dataset.action;
     const ip = btn.dataset.ip;
     const name = btn.dataset.name;
@@ -354,6 +424,10 @@
 
   // ---- events ----
   els.refreshBtn.addEventListener("click", loadUsers);
+  els.tableBody.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (btn) onActionClick(btn);
+  });
   els.searchInput.addEventListener("input", (e) => {
     state.search = e.target.value;
     render();
