@@ -114,6 +114,13 @@
     }
   }
 
+  // rowEls — соответствие ip → { tr, sig } для точечного обновления DOM.
+  // Ключ — IP (уникален на пира и уже используется как data-ip). Благодаря
+  // этому при обновлении данных перерисовываются только реально изменившиеся
+  // строки, а неизменившиеся сохраняют свой DOM-узел (нет мигания, не
+  // пересоздаются кнопки/картинки).
+  const rowEls = new Map();
+
   function render() {
     if (state.summary) {
       els.statTotal.textContent = state.summary.total;
@@ -138,20 +145,53 @@
     });
 
     if (filtered.length === 0) {
+      rowEls.clear();
       els.tableBody.innerHTML =
         '<tr><td colspan="7" class="empty-state">Никого не найдено</td></tr>';
       return;
     }
 
-    els.tableBody.innerHTML = filtered.map(rowHtml).join("");
+    // Keyed-реконсиляция: строим фрагмент в нужном порядке, переиспользуя
+    // существующие <tr> и обновляя их содержимое только при изменении данных.
+    const frag = document.createDocumentFragment();
+    const seen = new Set();
 
-    // навешиваем обработчики на кнопки действий
-    els.tableBody.querySelectorAll("[data-action]").forEach((btn) => {
-      btn.addEventListener("click", onActionClick);
-    });
+    for (const u of filtered) {
+      seen.add(u.ip);
+      const sig = signature(u);
+      let entry = rowEls.get(u.ip);
+      if (!entry) {
+        const tr = document.createElement("tr");
+        tr.dataset.ip = u.ip;
+        tr.innerHTML = rowInnerHtml(u);
+        entry = { tr, sig };
+        rowEls.set(u.ip, entry);
+      } else if (entry.sig !== sig) {
+        entry.tr.innerHTML = rowInnerHtml(u);
+        entry.sig = sig;
+      }
+      frag.appendChild(entry.tr); // перенос существующего узла сохраняет его DOM
+    }
+
+    // выкидываем строки, которых больше нет в наборе
+    for (const ip of Array.from(rowEls.keys())) {
+      if (!seen.has(ip)) rowEls.delete(ip);
+    }
+
+    els.tableBody.replaceChildren(frag);
   }
 
-  function rowHtml(u) {
+  // signature — строка из полей, влияющих на отображение строки. Если она не
+  // изменилась, строку не трогаем.
+  function signature(u) {
+    return [
+      u.num, u.name, u.ip, u.endpoint, u.handshake,
+      u.neverSeen ? 1 : 0, u.blocked ? 1 : 0, u.recentlyActive ? 1 : 0,
+    ].join("|");
+  }
+
+  // rowInnerHtml — содержимое строки (набор <td>) без обёртки <tr>.
+  function rowInnerHtml(u) {
     const nameClass = u.name === "—" ? "name-cell name-cell--empty" : "name-cell";
     const hsClass = u.neverSeen ? "hs-cell hs-cell--never" : "hs-cell";
 
@@ -185,20 +225,17 @@
     }
 
     return (
-      "<tr>" +
       '<td class="col-num">' + u.num + "</td>" +
       '<td class="' + nameClass + '">' + escapeHtml(u.name) + "</td>" +
       '<td class="ip-cell">' + escapeHtml(u.ip) + "</td>" +
       '<td class="endpoint-cell">' + escapeHtml(u.endpoint) + "</td>" +
       '<td class="' + hsClass + '">' + escapeHtml(u.handshake) + "</td>" +
       "<td>" + statusHtml + "</td>" +
-      '<td class="col-action">' + actionHtml + "</td>" +
-      "</tr>"
+      '<td class="col-action">' + actionHtml + "</td>"
     );
   }
 
-  function onActionClick(e) {
-    const btn = e.currentTarget;
+  function onActionClick(btn) {
     const action = btn.dataset.action;
     const ip = btn.dataset.ip;
     const name = btn.dataset.name;
@@ -353,6 +390,12 @@
   });
 
   // ---- events ----
+  // делегирование: один обработчик на всю таблицу вместо перенавешивания на
+  // каждую кнопку при каждом рендере
+  els.tableBody.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (btn && els.tableBody.contains(btn)) onActionClick(btn);
+  });
   els.refreshBtn.addEventListener("click", loadUsers);
   els.searchInput.addEventListener("input", (e) => {
     state.search = e.target.value;
