@@ -28,6 +28,10 @@
   </div>
   <div class="topbar__right">
     <span class="fetched-at" id="fetchedAt">—</span>
+    <button class="btn btn--primary" id="addBtn">
+      <svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      Добавить
+    </button>
     <button class="btn btn--ghost" id="themeToggle" title="Переключить тему" aria-label="Переключить тему">
       <svg class="icon icon--moon" viewBox="0 0 20 20" fill="none"><path d="M16 12.5A6.5 6.5 0 0 1 7.5 4a6.5 6.5 0 1 0 8.5 8.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
       <svg class="icon icon--sun" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="3.6" stroke="currentColor" stroke-width="1.6"/><path d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4M15.1 15.1l-1.4-1.4M6.3 6.3 4.9 4.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -110,6 +114,18 @@
     <div class="confirm-box__actions">
       <button class="btn btn--ghost" id="confirmCancel">Отмена</button>
       <button class="btn btn--danger" id="confirmOk">Подтвердить</button>
+    </div>
+  </div>
+</div>
+
+<div class="confirm-overlay" id="addOverlay">
+  <div class="confirm-box">
+    <div class="confirm-box__title">Добавить клиента</div>
+    <div class="confirm-box__text">Имя нового клиента. Будет сгенерирована новая пара ключей, выделен свободный IP, клиент появится и в приложении Amnezia.</div>
+    <input class="text-input" id="addInput" type="text" placeholder="Имя клиента" autocomplete="off" maxlength="128" spellcheck="false">
+    <div class="confirm-box__actions">
+      <button class="btn btn--ghost" id="addCancel">Отмена</button>
+      <button class="btn btn--primary" id="addOk">Создать</button>
     </div>
   </div>
 </div>

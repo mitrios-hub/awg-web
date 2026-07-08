@@ -43,6 +43,11 @@
     reissueDownload: document.getElementById("reissueDownload"),
     reissueCopy: document.getElementById("reissueCopy"),
     reissueClose: document.getElementById("reissueClose"),
+    addBtn: document.getElementById("addBtn"),
+    addOverlay: document.getElementById("addOverlay"),
+    addInput: document.getElementById("addInput"),
+    addOk: document.getElementById("addOk"),
+    addCancel: document.getElementById("addCancel"),
   };
 
   // ---- автообновление по таймеру (10 сек) ----
@@ -200,6 +205,9 @@
     const reissueBtn =
       '<button class="btn btn--row btn--row-reissue" data-action="reissue" data-ip="' +
       u.ip + '" data-name="' + escapeHtml(u.name) + '">Перевыпустить</button>';
+    const deleteBtn =
+      '<button class="btn btn--row btn--row-delete" data-action="delete" data-ip="' +
+      u.ip + '" data-name="' + escapeHtml(u.name) + '">Удалить</button>';
 
     if (u.blocked) {
       statusHtml =
@@ -210,6 +218,7 @@
         '<button class="btn btn--row btn--row-unblock" data-action="unblock" data-ip="' +
         u.ip + '" data-name="' + escapeHtml(u.name) + '">Включить</button>' +
         reissueBtn +
+        deleteBtn +
         "</div>";
     } else {
       const liveClass = u.recentlyActive ? " status-dot--live" : "";
@@ -221,6 +230,7 @@
         '<button class="btn btn--row btn--row-block" data-action="block" data-ip="' +
         u.ip + '" data-name="' + escapeHtml(u.name) + '">Отключить</button>' +
         reissueBtn +
+        deleteBtn +
         "</div>";
     }
 
@@ -259,6 +269,13 @@
           "Старый конфиг/QR (если он у клиента ещё остался) сразу перестанет работать — потребуется установить новый.",
         () => performReissue(ip)
       );
+    } else if (action === "delete") {
+      openConfirm(
+        "Удалить клиента",
+        "Удалить «" + name + "» (" + ip + ")? Пир будет убран из wg0.conf и clientsTable, IP освободится. " +
+          "Действие необратимо — если клиент нужен снова, придётся создать заново.",
+        () => performDelete(ip)
+      );
     }
   }
 
@@ -285,6 +302,17 @@
 
   let lastReissue = null;
 
+  // showClientConfig — общий вывод результата (конфиг + QR) в модалку,
+  // используется и перевыпуском, и добавлением клиента.
+  function showClientConfig(data, title, subtitle) {
+    lastReissue = data;
+    els.reissueTitle.textContent = title;
+    els.reissueSubtitle.textContent = subtitle;
+    els.reissueQr.src = "data:image/png;base64," + data.qrPngBase64;
+    els.reissueOverlay.classList.add("is-open");
+    if (data.warning) showToast(data.warning, true);
+  }
+
   async function performReissue(ip) {
     try {
       const res = await fetch("/api/users/" + encodeURIComponent(ip) + "/reissue", {
@@ -292,20 +320,47 @@
         credentials: "same-origin",
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || ("HTTP " + res.status));
-      }
-      lastReissue = data;
-      els.reissueSubtitle.textContent = data.name + " (" + data.ip + ") — новый конфиг готов";
-      els.reissueQr.src = "data:image/png;base64," + data.qrPngBase64;
-      els.reissueOverlay.classList.add("is-open");
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      showClientConfig(data, "Клиент перевыпущен", data.name + " (" + data.ip + ") — новый конфиг готов");
       showToast("Клиент перевыпущен", false);
-      if (data.warning) {
-        showToast(data.warning, true);
-      }
       loadUsers(); // clientId сменился — подтягиваем актуальные данные
     } catch (e) {
       showToast("Не удалось перевыпустить: " + e.message, true);
+    }
+  }
+
+  async function performAddClient(name) {
+    try {
+      const res = await fetch("/api/clients", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      showClientConfig(data, "Клиент добавлен", data.name + " (" + data.ip + ") — конфиг готов");
+      showToast("Клиент добавлен: " + data.name + " (" + data.ip + ")", false);
+      loadUsers();
+    } catch (e) {
+      showToast("Не удалось добавить клиента: " + e.message, true);
+    }
+  }
+
+  async function performDelete(ip) {
+    try {
+      const res = await fetch("/api/users/" + encodeURIComponent(ip) + "/delete", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || ("HTTP " + res.status));
+      }
+      showToast("Клиент удалён", false);
+      loadUsers();
+    } catch (e) {
+      showToast("Не удалось удалить: " + e.message, true);
     }
   }
 
@@ -367,7 +422,37 @@
     if (e.key === "Escape") {
       closeConfirm();
       closeReissue();
+      closeAdd();
     }
+  });
+
+  // ---- модалка добавления клиента ----
+  function openAdd() {
+    els.addInput.value = "";
+    els.addOverlay.classList.add("is-open");
+    setTimeout(() => els.addInput.focus(), 0);
+  }
+  function closeAdd() {
+    els.addOverlay.classList.remove("is-open");
+  }
+  function submitAdd() {
+    const name = els.addInput.value.trim();
+    if (!name) {
+      els.addInput.focus();
+      return;
+    }
+    closeAdd();
+    performAddClient(name);
+  }
+  els.addBtn.addEventListener("click", openAdd);
+  els.addCancel.addEventListener("click", closeAdd);
+  els.addOk.addEventListener("click", submitAdd);
+  els.addOverlay.addEventListener("click", (e) => {
+    if (e.target === els.addOverlay) closeAdd();
+  });
+  els.addInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitAdd();
+    else if (e.key === "Escape") closeAdd();
   });
 
   // ---- фильтр статуса ----
