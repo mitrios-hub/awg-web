@@ -170,6 +170,8 @@ body {
 .btn--ghost { background: transparent; }
 .btn--danger { background: var(--red); border-color: var(--red); color: #1a0708; font-weight: 600; }
 .btn--danger:hover { background: #ff6b71; border-color: #ff6b71; }
+.btn--primary { background: var(--teal); border-color: var(--teal); color: #04110f; font-weight: 600; }
+.btn--primary:hover { background: #4ee0cb; border-color: #4ee0cb; }
 
 .btn--row {
   font-size: 12px;
@@ -181,6 +183,8 @@ body {
 .btn--row-unblock:hover { background: rgba(53, 208, 186, 0.1); }
 .btn--row-reissue { color: var(--amber); border-color: var(--amber); }
 .btn--row-reissue:hover { background: rgba(232, 162, 61, 0.12); }
+.btn--row-delete { color: var(--red); border-color: var(--red-dim); }
+.btn--row-delete:hover { background: var(--red); border-color: var(--red); color: #1a0708; }
 
 .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
@@ -335,7 +339,7 @@ table.peers {
 .peers tbody tr:hover { background: var(--row-hover); }
 
 .col-num { width: 44px; color: var(--text-dim); }
-.col-action { width: 190px; text-align: right; }
+.col-action { width: 260px; text-align: right; }
 
 .name-cell { color: var(--text); font-family: var(--font-ui); font-size: 13px; }
 .name-cell--empty { color: var(--text-dim); }
@@ -438,6 +442,20 @@ table.peers {
 .confirm-box__title { font-weight: 600; font-size: 15px; margin-bottom: 8px; }
 .confirm-box__text { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 18px; }
 .confirm-box__actions { display: flex; justify-content: flex-end; gap: 10px; }
+.text-input {
+  width: 100%;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  padding: 10px 12px;
+  margin-bottom: 18px;
+  outline: none;
+}
+.text-input:focus { border-color: var(--teal); }
+.text-input::placeholder { color: var(--text-dim); }
 
 /* ===================== МОДАЛКА РЕЗУЛЬТАТА ПЕРЕВЫПУСКА ===================== */
 .reissue-box {

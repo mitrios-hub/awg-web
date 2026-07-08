@@ -53,12 +53,12 @@ import (
 type ClientEntry struct {
 	ClientID string `json:"clientId"`
 	UserData struct {
-		AllowedIps      string `json:"allowedIps"`
+		AllowedIps      string `json:"allowedIps,omitempty"`
 		ClientName      string `json:"clientName"`
 		CreationDate    string `json:"creationDate"`
-		DataReceived    string `json:"dataReceived"`
-		DataSent        string `json:"dataSent"`
-		LatestHandshake string `json:"latestHandshake"`
+		DataReceived    string `json:"dataReceived,omitempty"`
+		DataSent        string `json:"dataSent,omitempty"`
+		LatestHandshake string `json:"latestHandshake,omitempty"`
 	} `json:"userData"`
 }
 
@@ -76,7 +76,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "0.6"
+const AppVersion = "0.7"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -238,6 +238,10 @@ func buildClientConfig(priv, ip string, cfg config.Config, p wgInterfaceParams, 
 	if p.Jc != "" {
 		fmt.Fprintf(&b, "Jc = %s\nJmin = %s\nJmax = %s\nS1 = %s\nS2 = %s\nH1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n",
 			p.Jc, p.Jmin, p.Jmax, p.S1, p.S2, p.H1, p.H2, p.H3, p.H4)
+		// AmneziaWG новых версий добавляет в клиентский конфиг ещё пустые поля
+		// I1-I5 (в нашем серверном wg0.conf их нет). Пишем их для совпадения с
+		// конфигом, который отдаёт штатное приложение Amnezia.
+		b.WriteString("I1 = \nI2 = \nI3 = \nI4 = \nI5 = \n")
 	}
 	b.WriteString("\n[Peer]\n")
 	fmt.Fprintf(&b, "PublicKey = %s\n", serverPub)
@@ -730,6 +734,319 @@ func unblockIP(cfg config.Config, ip string) error {
 	return nil
 }
 
+// ===================== ДОБАВЛЕНИЕ / УДАЛЕНИЕ КЛИЕНТОВ =====================
+//
+// Формат хранения клиента у AmneziaWG (проверено на реальном сервере):
+//   - пир живёт в ДВУХ файлах: [Peer] в wg0.conf и запись в clientsTable;
+//     отдельного стороннего состояния приложение Amnezia не хранит, поэтому
+//     правки этих двух файлов сохраняют совместимость с нативным приложением;
+//   - связь между ними — по публичному ключу (clientId == PublicKey пира);
+//   - IP авторитетно задаётся в wg0.conf (AllowedIPs), в clientsTable его
+//     может не быть вовсе;
+//   - при СОЗДАНИИ клиента приложение пишет минимальную запись
+//     {clientId, userData:{clientName, creationDate}} — поля статистики
+//     добавляются позже самим приложением, поэтому мы их не пишем;
+//   - PSK общий на всех пиров, новый клиент использует тот же.
+
+// clientNameRe — допустимые символы имени клиента: буквы (в т.ч. кириллица),
+// цифры, пробел и часть пунктуации (штатные имена бывают вида
+// "Admin [Windows 11 Version 24H2]"). Управляющие символы и кавычки запрещены.
+var clientNameRe = regexp.MustCompile(`^[\p{L}\p{N} _.\-\[\]()]{1,128}$`)
+
+var allowedIPRe = regexp.MustCompile(`AllowedIPs\s*=\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/32`)
+
+// wgSyncConf применяет текущий wg0.conf к живому интерфейсу без даунтайма —
+// тот же штатный путь, что и у перевыпуска.
+func wgSyncConf(cfg config.Config) error {
+	syncCmd := fmt.Sprintf("wg syncconf %s <(wg-quick strip %s)", cfg.WgInterface, cfg.WgConfPath)
+	if out, err := dockerExec(cfg.Container, "bash", "-c", syncCmd); err != nil {
+		return fmt.Errorf("не удалось применить конфиг через wg syncconf: %w (%s). "+
+			"Изменение вступит в силу при следующем перезапуске контейнера %s", err, out, cfg.Container)
+	}
+	return nil
+}
+
+// dockerBackup делает резервную копию файла внутри контейнера (path.bak) —
+// подстраховка перед структурными правками wg0.conf/clientsTable.
+func dockerBackup(cfg config.Config, path string) error {
+	out, err := dockerExec(cfg.Container, "sh", "-c", "cp "+shellQuote(path)+" "+shellQuote(path+".bak"))
+	if err != nil {
+		return fmt.Errorf("не удалось сделать резервную копию %s: %w (%s)", path, err, out)
+	}
+	return nil
+}
+
+// sharedPSK достаёт общий PresharedKey из первого [Peer] в wg0.conf.
+func sharedPSK(conf string) (string, error) {
+	for _, block := range strings.Split(conf, "[Peer]")[1:] {
+		for _, line := range strings.Split(block, "\n") {
+			if m := kvLineRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil && m[1] == "PresharedKey" {
+				return m[2], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("в wg0.conf не найден PresharedKey ни в одном [Peer] — не с чего взять общий PSK")
+}
+
+// subnetPrefix возвращает префикс подсети ("10.8.1.") из строки Address секции
+// [Interface] (например "Address = 10.8.1.0/24").
+func subnetPrefix(conf string) (string, error) {
+	inInterface := false
+	for _, line := range strings.Split(conf, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[Interface]" {
+			inInterface = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			inInterface = false
+			continue
+		}
+		if !inInterface {
+			continue
+		}
+		if m := kvLineRe.FindStringSubmatch(trimmed); m != nil && m[1] == "Address" {
+			addr := strings.SplitN(strings.TrimSpace(m[2]), "/", 2)[0]
+			octets := strings.Split(addr, ".")
+			if len(octets) != 4 {
+				return "", fmt.Errorf("не удалось разобрать Address %q в [Interface]", m[2])
+			}
+			return strings.Join(octets[:3], ".") + ".", nil
+		}
+	}
+	return "", fmt.Errorf("в секции [Interface] wg0.conf не найден Address")
+}
+
+// allocateFreeIP выбирает наименьший свободный адрес /24. Занятые адреса берутся
+// из wg0.conf (авторитетный источник — в clientsTable IP может не быть).
+// Диапазон 1..254; .0 занят самим сервером (Address = X.Y.Z.0/24).
+func allocateFreeIP(conf string) (string, error) {
+	prefix, err := subnetPrefix(conf)
+	if err != nil {
+		return "", err
+	}
+	used := map[int]bool{}
+	for _, m := range allowedIPRe.FindAllStringSubmatch(conf, -1) {
+		if strings.HasPrefix(m[1], prefix) {
+			if n, err := strconv.Atoi(strings.TrimPrefix(m[1], prefix)); err == nil {
+				used[n] = true
+			}
+		}
+	}
+	for n := 1; n <= 254; n++ {
+		if !used[n] {
+			return prefix + strconv.Itoa(n), nil
+		}
+	}
+	return "", fmt.Errorf("нет свободных адресов в подсети %s0/24", prefix)
+}
+
+// addClientToTable дописывает в clientsTable минимальную запись нового клиента
+// в нативном формате Amnezia: clientId (= публичный ключ) + clientName +
+// creationDate (ctime-формат, как пишет само приложение).
+func addClientToTable(cfg config.Config, pub, name string) error {
+	raw, err := dockerExec(cfg.Container, "cat", cfg.ClientsTablePath)
+	if err != nil {
+		return fmt.Errorf("не удалось прочитать clientsTable: %w (%s)", err, raw)
+	}
+	var entries []ClientEntry
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return fmt.Errorf("не удалось разобрать clientsTable: %w", err)
+	}
+	var e ClientEntry
+	e.ClientID = pub
+	e.UserData.ClientName = name
+	e.UserData.CreationDate = time.Now().Format("Mon Jan _2 15:04:05 2006")
+	entries = append(entries, e)
+
+	if err := dockerBackup(cfg, cfg.ClientsTablePath); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(entries, "", "    ")
+	if err != nil {
+		return fmt.Errorf("не удалось сериализовать clientsTable: %w", err)
+	}
+	return dockerWriteFile(cfg.Container, cfg.ClientsTablePath, string(data))
+}
+
+// addClient создаёт нового клиента: генерирует пару ключей, выделяет свободный
+// IP, дописывает [Peer] в wg0.conf и запись в clientsTable, применяет живьём и
+// возвращает готовый конфиг + QR.
+func addClient(cfg config.Config, name string) (ReissueResponse, error) {
+	name = strings.TrimSpace(name)
+	if !clientNameRe.MatchString(name) {
+		return ReissueResponse{}, fmt.Errorf("недопустимое имя клиента (буквы, цифры, пробел, . _ - [ ] ( ), до 128 символов)")
+	}
+
+	endpoint, err := resolveClientEndpoint(cfg)
+	if err != nil {
+		return ReissueResponse{}, err
+	}
+
+	confText, err := dockerExec(cfg.Container, "cat", cfg.WgConfPath)
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось прочитать %s: %w (%s)", cfg.WgConfPath, err, confText)
+	}
+	ifaceParams := parseWgConfInterface(confText)
+
+	psk, err := sharedPSK(confText)
+	if err != nil {
+		return ReissueResponse{}, err
+	}
+	ip, err := allocateFreeIP(confText)
+	if err != nil {
+		return ReissueResponse{}, err
+	}
+
+	serverPubOut, err := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface, "public-key")
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось получить публичный ключ сервера: %w (%s)", err, serverPubOut)
+	}
+	serverPub := strings.TrimSpace(serverPubOut)
+
+	privOut, err := dockerExec(cfg.Container, "wg", "genkey")
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось сгенерировать приватный ключ: %w (%s)", err, privOut)
+	}
+	priv := strings.TrimSpace(privOut)
+	pubOut, err := dockerExecStdin(cfg.Container, priv+"\n", "wg", "pubkey")
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось вычислить публичный ключ: %w (%s)", err, pubOut)
+	}
+	pub := strings.TrimSpace(pubOut)
+
+	// 1) дописываем блок [Peer] в wg0.conf (с резервной копией)
+	if err := dockerBackup(cfg, cfg.WgConfPath); err != nil {
+		return ReissueResponse{}, err
+	}
+	newConf := strings.TrimRight(confText, "\n") + "\n\n" +
+		fmt.Sprintf("[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s/32\n", pub, psk, ip)
+	if err := dockerWriteFile(cfg.Container, cfg.WgConfPath, newConf); err != nil {
+		return ReissueResponse{}, fmt.Errorf("не удалось записать %s: %w", cfg.WgConfPath, err)
+	}
+
+	// 2) применяем живьём
+	if err := wgSyncConf(cfg); err != nil {
+		return ReissueResponse{}, err
+	}
+
+	// 3) запись в clientsTable (не критично для подключения: если не удастся —
+	// клиент уже работает, просто останется без имени в списке)
+	if err := addClientToTable(cfg, pub, name); err != nil {
+		log.Printf("добавление %q (%s): пир в wg0.conf создан, но запись в clientsTable — нет: %v", name, ip, err)
+	}
+
+	confOut := buildClientConfig(priv, ip, cfg, ifaceParams, serverPub, psk, endpoint)
+	png, err := qrcode.Encode(confOut, qrcode.Medium, 512)
+	if err != nil {
+		return ReissueResponse{}, fmt.Errorf("клиент добавлен, но не удалось сгенерировать QR-код: %w", err)
+	}
+
+	var warning string
+	if ifaceParams.Jc == "" {
+		warning = "В [Interface] wg0.conf нет параметров обфускации (Jc/…): конфиг может не подключиться, если версия AmneziaWG их требует."
+	}
+	return ReissueResponse{
+		IP:          ip,
+		Name:        name,
+		Filename:    sanitizeFilename(name) + ".conf",
+		ConfigText:  confOut,
+		QRPngBase64: base64.StdEncoding.EncodeToString(png),
+		Warning:     warning,
+	}, nil
+}
+
+// removePeerByIP убирает из текста wg0.conf блок [Peer], чей AllowedIPs
+// совпадает с ip/32. Возвращает новый текст и признак, что блок был найден.
+func removePeerByIP(conf, ip string) (string, bool) {
+	parts := strings.Split(conf, "[Peer]")
+	var b strings.Builder
+	b.WriteString(parts[0]) // секция [Interface] и всё до первого [Peer]
+	removed := false
+	target := ip + "/32"
+	for _, block := range parts[1:] {
+		match := false
+		for _, line := range strings.Split(block, "\n") {
+			if m := kvLineRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil && m[1] == "AllowedIPs" {
+				for _, a := range strings.Split(m[2], ",") {
+					if strings.TrimSpace(a) == target {
+						match = true
+					}
+				}
+			}
+		}
+		if match {
+			removed = true
+			continue
+		}
+		b.WriteString("[Peer]")
+		b.WriteString(block)
+	}
+	return b.String(), removed
+}
+
+// removeClientFromTable убирает запись клиента из clientsTable по публичному
+// ключу (clientId) с запасным сопоставлением по allowedIps.
+func removeClientFromTable(cfg config.Config, pub, ip string) error {
+	raw, err := dockerExec(cfg.Container, "cat", cfg.ClientsTablePath)
+	if err != nil {
+		return fmt.Errorf("не удалось прочитать clientsTable: %w (%s)", err, raw)
+	}
+	var entries []ClientEntry
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return fmt.Errorf("не удалось разобрать clientsTable: %w", err)
+	}
+	target := ip + "/32"
+	kept := make([]ClientEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.ClientID == pub || (e.UserData.AllowedIps != "" && e.UserData.AllowedIps == target) {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if err := dockerBackup(cfg, cfg.ClientsTablePath); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(kept, "", "    ")
+	if err != nil {
+		return fmt.Errorf("не удалось сериализовать clientsTable: %w", err)
+	}
+	return dockerWriteFile(cfg.Container, cfg.ClientsTablePath, string(data))
+}
+
+// deleteClient удаляет клиента: убирает [Peer] из wg0.conf, запись из
+// clientsTable, применяет живьём и снимает возможную блокировку iptables.
+func deleteClient(cfg config.Config, ip string) error {
+	confText, err := dockerExec(cfg.Container, "cat", cfg.WgConfPath)
+	if err != nil {
+		return fmt.Errorf("не удалось прочитать %s: %w (%s)", cfg.WgConfPath, err, confText)
+	}
+	peer, ok := findPeerByIP(confText, ip)
+	if !ok {
+		return fmt.Errorf("пир с IP %s не найден в %s", ip, cfg.WgConfPath)
+	}
+	newConf, removed := removePeerByIP(confText, ip)
+	if !removed {
+		return fmt.Errorf("не удалось вырезать [Peer] блок для %s из %s", ip, cfg.WgConfPath)
+	}
+
+	if err := dockerBackup(cfg, cfg.WgConfPath); err != nil {
+		return err
+	}
+	if err := dockerWriteFile(cfg.Container, cfg.WgConfPath, newConf); err != nil {
+		return fmt.Errorf("не удалось записать %s: %w", cfg.WgConfPath, err)
+	}
+	if err := wgSyncConf(cfg); err != nil {
+		return err
+	}
+
+	if err := removeClientFromTable(cfg, peer.PublicKey, ip); err != nil {
+		log.Printf("удаление %s: пир убран из wg0.conf, но запись в clientsTable — нет: %v", ip, err)
+	}
+	_ = unblockIP(cfg, ip) // на случай, если клиент был заблокирован — не оставляем висячее правило
+	return nil
+}
+
 // ===================== АУТЕНТИФИКАЦИЯ (bcrypt) =====================
 
 // bcryptBasicAuth — Basic Auth со сравнением пароля через bcrypt-хэш из
@@ -852,6 +1169,35 @@ func main() {
 				return
 			}
 			c.JSON(http.StatusOK, resp)
+		})
+
+		api.POST("/clients", func(c *gin.Context) {
+			var body struct {
+				Name string `json:"name"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "ожидается JSON {\"name\": \"...\"}"})
+				return
+			}
+			resp, err := addClient(cfg, body.Name)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, resp)
+		})
+
+		api.POST("/users/:ip/delete", func(c *gin.Context) {
+			ip := c.Param("ip")
+			if !ipOnlyRe.MatchString(ip) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "некорректный IP"})
+				return
+			}
+			if err := deleteClient(cfg, ip); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"ok": true})
 		})
 	}
 
