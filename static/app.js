@@ -64,6 +64,13 @@
     addInput: document.getElementById("addInput"),
     addOk: document.getElementById("addOk"),
     addCancel: document.getElementById("addCancel"),
+    backupBtn: document.getElementById("backupBtn"),
+    backupOverlay: document.getElementById("backupOverlay"),
+    backupDownload: document.getElementById("backupDownload"),
+    backupFile: document.getElementById("backupFile"),
+    restoreClients: document.getElementById("restoreClients"),
+    restoreFull: document.getElementById("restoreFull"),
+    backupClose: document.getElementById("backupClose"),
   };
 
   function escapeHtml(s) {
@@ -449,6 +456,7 @@
       closeConfirm();
       closeReissue();
       closeAdd();
+      closeBackup();
     }
   });
 
@@ -480,6 +488,94 @@
     if (e.key === "Enter") submitAdd();
     else if (e.key === "Escape") closeAdd();
   });
+
+  // ---- резервная копия ----
+  function openBackup() {
+    els.backupFile.value = "";
+    els.backupOverlay.classList.add("is-open");
+  }
+  function closeBackup() {
+    els.backupOverlay.classList.remove("is-open");
+  }
+
+  async function downloadBackup() {
+    try {
+      const res = await fetch("/api/backup", { credentials: "same-origin" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || ("HTTP " + res.status));
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get("Content-Disposition") || "";
+      const m = cd.match(/filename="([^"]+)"/);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = m ? m[1] : "awg-backup.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast("Резервная копия скачана", false);
+    } catch (e) {
+      showToast("Не удалось скачать резерв: " + e.message, true);
+    }
+  }
+
+  function restoreFromFile(mode) {
+    const file = els.backupFile.files && els.backupFile.files[0];
+    if (!file) {
+      showToast("Сначала выберите файл резервной копии", true);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      let bundle;
+      try {
+        bundle = JSON.parse(reader.result);
+      } catch (e) {
+        showToast("Файл не является корректным JSON", true);
+        return;
+      }
+      const n = Array.isArray(bundle.clients) ? bundle.clients.length : 0;
+      const warn = mode === "full"
+        ? "ПОЛНОЕ восстановление: сервер примет идентичность из бэкапа (ключи/PSK/обфускация) и будет ПЕРЕЗАПУЩЕН. " +
+          "Текущие клиенты сервера будут заменены на " + n + " из файла. Старые клиентские конфиги останутся валидны (нужен DNS на endpoint)."
+        : "Восстановление ТОЛЬКО клиентов: идентичность текущего сервера сохранится, список клиентов заменится на " + n + " из файла. " +
+          "Клиентам после этого потребуется перевыпуск (ключи сервера другие).";
+      closeBackup();
+      openConfirm("Восстановить из резерва", warn + " Действие перезапишет текущую конфигурацию. Продолжить?",
+        () => performRestore(mode, bundle));
+    };
+    reader.onerror = () => showToast("Не удалось прочитать файл", true);
+    reader.readAsText(file);
+  }
+
+  async function performRestore(mode, bundle) {
+    try {
+      const res = await fetch("/api/restore?mode=" + mode, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(bundle),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      showToast("Восстановлено клиентов: " + (data.restored || 0) + (mode === "full" ? " (контейнер перезапущен)" : ""), false);
+      loadUsers();
+    } catch (e) {
+      showToast("Не удалось восстановить: " + e.message, true);
+    }
+  }
+
+  els.backupBtn.addEventListener("click", openBackup);
+  els.backupClose.addEventListener("click", closeBackup);
+  els.backupOverlay.addEventListener("click", (e) => {
+    if (e.target === els.backupOverlay) closeBackup();
+  });
+  els.backupDownload.addEventListener("click", downloadBackup);
+  els.restoreClients.addEventListener("click", () => restoreFromFile("clients"));
+  els.restoreFull.addEventListener("click", () => restoreFromFile("full"));
 
   // ---- фильтр статуса ----
   els.statusFilter.addEventListener("click", (e) => {

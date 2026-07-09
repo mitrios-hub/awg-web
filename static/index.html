@@ -32,6 +32,10 @@
       <svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
       Добавить
     </button>
+    <button class="btn btn--ghost" id="backupBtn" title="Резервная копия" aria-label="Резервная копия">
+      <svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M10 3v8m0 0 3-3m-3 3-3-3M4 14v2a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Резерв
+    </button>
     <button class="btn btn--ghost" id="themeToggle" title="Переключить тему" aria-label="Переключить тему">
       <svg class="icon icon--moon" viewBox="0 0 20 20" fill="none"><path d="M16 12.5A6.5 6.5 0 0 1 7.5 4a6.5 6.5 0 1 0 8.5 8.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
       <svg class="icon icon--sun" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="3.6" stroke="currentColor" stroke-width="1.6"/><path d="M10 2.5v2M10 15.5v2M17.5 10h-2M4.5 10h-2M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4M15.1 15.1l-1.4-1.4M6.3 6.3 4.9 4.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -120,6 +124,22 @@
       <button class="btn btn--ghost" id="addCancel">Отмена</button>
       <button class="btn btn--primary" id="addOk">Создать</button>
     </div>
+  </div>
+</div>
+
+<div class="confirm-overlay" id="backupOverlay">
+  <div class="confirm-box">
+    <div class="confirm-box__title">Резервная копия</div>
+    <div class="confirm-box__text">Бандл содержит ключи сервера, PSK, параметры и список клиентов — это секреты, храни файл надёжно.</div>
+    <button class="btn btn--primary btn--block" id="backupDownload">Скачать резерв (.json)</button>
+
+    <div class="backup-sep">Восстановление из файла</div>
+    <input type="file" id="backupFile" accept="application/json,.json" class="text-input">
+    <div class="backup-actions">
+      <button class="btn btn--block" id="restoreClients">Загрузить: только клиенты</button>
+      <button class="btn btn--danger btn--block" id="restoreFull">Загрузить: сервер + клиенты (перезапуск)</button>
+    </div>
+    <button class="reissue-box__close" id="backupClose">Закрыть</button>
   </div>
 </div>
 
