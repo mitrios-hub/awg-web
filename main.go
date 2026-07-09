@@ -35,6 +35,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -78,7 +79,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "1.1"
+const AppVersion = "1.2"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -1218,6 +1219,244 @@ func deleteClient(cfg config.Config, ip string) error {
 	return nil
 }
 
+// ===================== РЕЗЕРВНАЯ КОПИЯ / ВОССТАНОВЛЕНИЕ =====================
+//
+// Бандл содержит ВСЁ, что нужно, чтобы поднять клиентов на новом сервере:
+//   - идентичность сервера: приватный/публичный ключ, PSK и полный текст
+//     секции [Interface] (обфускация Jc/S1/S2/H1-H4, порт, PostUp/PostDown);
+//   - список клиентов (пиров): публичный ключ, PSK, IP, имя, дата.
+//
+// Два режима восстановления:
+//   - full  — принимаем идентичность сервера из бэкапа. Старые клиентские
+//     конфиги остаются валидными (нужен только DNS на endpoint), перевыпуск не
+//     требуется. Меняется приватный ключ/обфускация → перезапускаем контейнер,
+//     чтобы AmneziaWG перечитал всё с нуля.
+//   - clients — оставляем идентичность ТЕКУЩЕГО сервера, переносим только
+//     список клиентов (их потом надо перевыпустить, т.к. ключи сервера другие).
+//
+// Файл — открытый JSON и содержит СЕКРЕТЫ (приватный ключ сервера, PSK). Хранить
+// в надёжном месте, качать только по TLS.
+
+const backupVersion = 1
+
+type BackupServer struct {
+	PrivateKey    string `json:"privateKey"`
+	PublicKey     string `json:"publicKey"`
+	PSK           string `json:"psk"`
+	InterfaceText string `json:"interfaceText"` // полный текст секции [Interface]
+}
+
+type BackupClient struct {
+	PublicKey    string `json:"publicKey"`
+	PresharedKey string `json:"presharedKey"`
+	IP           string `json:"ip"`
+	Name         string `json:"name"`
+	CreationDate string `json:"creationDate"`
+}
+
+type BackupBundle struct {
+	Version   int            `json:"version"`
+	CreatedAt string         `json:"createdAt"`
+	Server    BackupServer   `json:"server"`
+	Clients   []BackupClient `json:"clients"`
+}
+
+// interfaceSection возвращает текст секции [Interface] (всё до первого [Peer]).
+func interfaceSection(conf string) string {
+	return strings.Split(conf, "[Peer]")[0]
+}
+
+// interfaceField достаёт значение поля из секции [Interface] (напр. PrivateKey).
+func interfaceField(conf, key string) string {
+	for _, line := range strings.Split(interfaceSection(conf), "\n") {
+		if m := kvLineRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil && m[1] == key {
+			return m[2]
+		}
+	}
+	return ""
+}
+
+// parseConfPeers разбирает все [Peer] из wg0.conf в список.
+func parseConfPeers(conf string) []confPeer {
+	var peers []confPeer
+	for _, block := range strings.Split(conf, "[Peer]")[1:] {
+		var p confPeer
+		for _, line := range strings.Split(block, "\n") {
+			m := kvLineRe.FindStringSubmatch(strings.TrimSpace(line))
+			if m == nil {
+				continue
+			}
+			switch m[1] {
+			case "PublicKey":
+				p.PublicKey = m[2]
+			case "PresharedKey":
+				p.PresharedKey = m[2]
+			case "AllowedIPs":
+				p.AllowedIPs = m[2]
+			}
+		}
+		if p.PublicKey != "" {
+			peers = append(peers, p)
+		}
+	}
+	return peers
+}
+
+// buildBackup собирает бандл из текущего состояния сервера.
+func buildBackup(cfg config.Config) (BackupBundle, error) {
+	conf, err := dockerExec(cfg.Container, "cat", cfg.WgConfPath)
+	if err != nil {
+		return BackupBundle{}, fmt.Errorf("не удалось прочитать %s: %w (%s)", cfg.WgConfPath, err, conf)
+	}
+	serverPubOut, _ := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface, "public-key")
+	psk, _ := sharedPSK(conf)
+
+	// имена/даты из clientsTable по публичному ключу
+	type meta struct{ name, date string }
+	byKey := map[string]meta{}
+	if raw, err := dockerExec(cfg.Container, "cat", cfg.ClientsTablePath); err == nil {
+		var entries []ClientEntry
+		if json.Unmarshal([]byte(raw), &entries) == nil {
+			for _, e := range entries {
+				byKey[e.ClientID] = meta{e.UserData.ClientName, e.UserData.CreationDate}
+			}
+		}
+	}
+
+	var clients []BackupClient
+	for _, p := range parseConfPeers(conf) {
+		ip := strings.SplitN(strings.SplitN(p.AllowedIPs, ",", 2)[0], "/", 2)[0]
+		m := byKey[p.PublicKey]
+		clients = append(clients, BackupClient{
+			PublicKey:    p.PublicKey,
+			PresharedKey: p.PresharedKey,
+			IP:           ip,
+			Name:         m.name,
+			CreationDate: m.date,
+		})
+	}
+
+	return BackupBundle{
+		Version:   backupVersion,
+		CreatedAt: time.Now().Format(time.RFC3339),
+		Server: BackupServer{
+			PrivateKey:    interfaceField(conf, "PrivateKey"),
+			PublicKey:     strings.TrimSpace(serverPubOut),
+			PSK:           psk,
+			InterfaceText: interfaceSection(conf),
+		},
+		Clients: clients,
+	}, nil
+}
+
+// buildPeersText собирает блоки [Peer] из клиентов бэкапа. Если pskOverride не
+// пуст — им заменяется PSK у всех пиров (режим clients: под текущий PSK сервера).
+func buildPeersText(clients []BackupClient, pskOverride string) string {
+	var b strings.Builder
+	for _, c := range clients {
+		if c.PublicKey == "" || !ipOnlyRe.MatchString(c.IP) {
+			continue
+		}
+		psk := c.PresharedKey
+		if pskOverride != "" {
+			psk = pskOverride
+		}
+		fmt.Fprintf(&b, "[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s/32\n\n", c.PublicKey, psk, c.IP)
+	}
+	return b.String()
+}
+
+// buildClientsTableJSON собирает clientsTable из клиентов бэкапа (нативный
+// минимальный формат: clientId + userData{clientName, creationDate}).
+func buildClientsTableJSON(clients []BackupClient) ([]byte, error) {
+	entries := make([]ClientEntry, 0, len(clients))
+	for _, c := range clients {
+		if c.PublicKey == "" {
+			continue
+		}
+		var e ClientEntry
+		e.ClientID = c.PublicKey
+		e.UserData.ClientName = c.Name
+		e.UserData.CreationDate = c.CreationDate
+		entries = append(entries, e)
+	}
+	return json.MarshalIndent(entries, "", "    ")
+}
+
+// restoreBackup применяет бандл. full=true — восстановление идентичности сервера
+// (с перезапуском контейнера); full=false — только список клиентов.
+func restoreBackup(cfg config.Config, b BackupBundle, full bool) (int, error) {
+	if b.Version != backupVersion {
+		return 0, fmt.Errorf("неподдерживаемая версия резервной копии: %d (ожидалась %d)", b.Version, backupVersion)
+	}
+	if len(b.Clients) == 0 {
+		return 0, fmt.Errorf("в резервной копии нет клиентов")
+	}
+
+	curConf, err := dockerExec(cfg.Container, "cat", cfg.WgConfPath)
+	if err != nil {
+		return 0, fmt.Errorf("не удалось прочитать текущий %s: %w (%s)", cfg.WgConfPath, err, curConf)
+	}
+
+	var ifaceText, peerPSK string
+	if full {
+		if strings.TrimSpace(b.Server.InterfaceText) == "" {
+			return 0, fmt.Errorf("в резервной копии нет секции [Interface] сервера — полное восстановление невозможно")
+		}
+		ifaceText = b.Server.InterfaceText // принимаем идентичность из бэкапа
+	} else {
+		ifaceText = interfaceSection(curConf) // сохраняем текущую идентичность
+		psk, err := sharedPSK(curConf)
+		if err != nil {
+			return 0, err
+		}
+		peerPSK = psk // пиры под текущий PSK (клиентов потом перевыпустить)
+	}
+
+	table, err := buildClientsTableJSON(b.Clients)
+	if err != nil {
+		return 0, err
+	}
+
+	// резервные копии перед перезаписью
+	if err := dockerBackup(cfg, cfg.WgConfPath); err != nil {
+		return 0, err
+	}
+	if err := dockerBackup(cfg, cfg.ClientsTablePath); err != nil {
+		return 0, err
+	}
+
+	newConf := strings.TrimRight(ifaceText, "\n") + "\n\n" + buildPeersText(b.Clients, peerPSK)
+	if err := dockerWriteFile(cfg.Container, cfg.WgConfPath, newConf); err != nil {
+		return 0, fmt.Errorf("не удалось записать %s: %w", cfg.WgConfPath, err)
+	}
+	if err := dockerWriteFile(cfg.Container, cfg.ClientsTablePath, string(table)); err != nil {
+		return 0, fmt.Errorf("не удалось записать clientsTable: %w", err)
+	}
+
+	if full {
+		// дублируем ключи сервера в штатные файлы Amnezia (для нативного
+		// приложения); для туннеля хватает PrivateKey в wg0.conf. Best-effort.
+		dir := path.Dir(cfg.WgConfPath)
+		if b.Server.PrivateKey != "" {
+			_ = dockerWriteFile(cfg.Container, dir+"/wireguard_server_private_key.key", b.Server.PrivateKey+"\n")
+		}
+		if b.Server.PublicKey != "" {
+			_ = dockerWriteFile(cfg.Container, dir+"/wireguard_server_public_key.key", b.Server.PublicKey+"\n")
+		}
+		if b.Server.PSK != "" {
+			_ = dockerWriteFile(cfg.Container, dir+"/wireguard_psk.key", b.Server.PSK+"\n")
+		}
+		// сменилась идентичность/обфускация — надёжнее перезапустить контейнер.
+		if out, err := exec.Command("docker", "restart", cfg.Container).CombinedOutput(); err != nil {
+			return 0, fmt.Errorf("файлы восстановлены, но не удалось перезапустить контейнер %s: %w (%s)", cfg.Container, err, out)
+		}
+	} else if err := wgSyncConf(cfg); err != nil {
+		return 0, err
+	}
+	return len(b.Clients), nil
+}
+
 // ===================== АУТЕНТИФИКАЦИЯ (bcrypt) =====================
 
 // bcryptBasicAuth — Basic Auth со сравнением пароля через bcrypt-хэш из
@@ -1369,6 +1608,41 @@ func main() {
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+
+		api.GET("/backup", func(c *gin.Context) {
+			b, err := buildBackup(cfg)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			data, err := json.MarshalIndent(b, "", "  ")
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			fname := "awg-backup-" + time.Now().Format("2006-01-02") + ".json"
+			c.Header("Content-Disposition", `attachment; filename="`+fname+`"`)
+			c.Data(http.StatusOK, "application/json", data)
+		})
+
+		api.POST("/restore", func(c *gin.Context) {
+			mode := c.Query("mode")
+			if mode != "clients" && mode != "full" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "параметр mode должен быть clients или full"})
+				return
+			}
+			var b BackupBundle
+			if err := c.ShouldBindJSON(&b); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "не удалось разобрать JSON резервной копии: " + err.Error()})
+				return
+			}
+			n, err := restoreBackup(cfg, b, mode == "full")
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"ok": true, "restored": n, "mode": mode})
 		})
 	}
 
