@@ -78,7 +78,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "1.0"
+const AppVersion = "1.1"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -782,11 +782,12 @@ func unblockIP(cfg config.Config, ip string) error {
 // (получено клиентом) — без -j, поэтому пакет только считается и идёт дальше.
 // Итог по клиенту = сумма обоих. Если правила для клиента нет (новый, создан
 // нативно в Amnezia, или контейнер перезапущен и правила сбросились) — оно
-// добавляется и считается с нуля. Данные кэшируются ~1 мин, чтобы не дёргать
-// iptables на каждый запрос.
+// добавляется и считается с нуля. Данные кэшируются очень коротко (trafficTTL),
+// только чтобы схлопнуть всплеск одновременных запросов (несколько вкладок), —
+// по сути обновляются каждую секунду вместе с опросом фронтенда.
 
 const trafficChain = "AWG_ACCT"
-const trafficTTL = 60 * time.Second
+const trafficTTL = 500 * time.Millisecond
 
 var (
 	trafficMu   sync.Mutex
@@ -890,8 +891,9 @@ func refreshTraffic(cfg config.Config, ips []string) map[string]int64 {
 	return total
 }
 
-// getTraffic возвращает трафик по клиентам с кэшем ~1 мин (trafficTTL), чтобы
-// не нагружать сервер частыми вызовами iptables.
+// getTraffic возвращает трафик по клиентам. Короткий кэш (trafficTTL) лишь
+// схлопывает одновременные запросы; при опросе раз в секунду данные фактически
+// обновляются каждую секунду.
 func getTraffic(cfg config.Config, ips []string) map[string]int64 {
 	trafficMu.Lock()
 	defer trafficMu.Unlock()

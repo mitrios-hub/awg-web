@@ -34,7 +34,6 @@
   }
 
   const els = {
-    refreshBtn: document.getElementById("refreshBtn"),
     themeToggle: document.getElementById("themeToggle"),
     fetchedAt: document.getElementById("fetchedAt"),
     containerName: document.getElementById("containerName"),
@@ -508,7 +507,6 @@
     const btn = e.target.closest("[data-action]");
     if (btn && els.tableBody.contains(btn)) onActionClick(btn);
   });
-  els.refreshBtn.addEventListener("click", loadUsers);
   els.searchInput.addEventListener("input", (e) => {
     state.search = e.target.value;
     render();
