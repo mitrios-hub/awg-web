@@ -276,11 +276,6 @@ body {
 }
 .toggle input { accent-color: var(--teal); width: 15px; height: 15px; cursor: pointer; }
 
-.toggle--autorefresh {
-  padding: 0 4px;
-  white-space: nowrap;
-}
-
 .segmented {
   display: inline-flex;
   background: var(--panel);
