@@ -78,7 +78,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "0.8"
+const AppVersion = "0.9"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -799,13 +799,34 @@ var (
 var acctRuleRe = regexp.MustCompile(`^\[\d+:(\d+)\]\s+-A\s+` + trafficChain + `\s+(-[sd])\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
 
 // ensureTrafficChain создаёт цепочку AWG_ACCT и вешает переход на неё из
-// mangle/PREROUTING (идемпотентно).
+// mangle/FORWARD (идемпотентно).
+//
+// Почему FORWARD, а не PREROUTING: на PREROUTING для ВХОДЯЩИХ пакетов адрес
+// назначения ещё равен публичному IP сервера (обратный NAT происходит позже),
+// поэтому правило "-d <клиент>" не срабатывает и download не считается. На
+// FORWARD IP клиента виден в обе стороны: исходящие — ещё до SNAT (src=клиент),
+// входящие — уже после обратного DNAT (dst=клиент). Это даёт корректный up+down.
 func ensureTrafficChain(cfg config.Config) error {
 	// -N вернёт ошибку, если цепочка уже есть — это нормально, игнорируем.
 	_, _ = dockerExec(cfg.Container, "iptables", "-t", "mangle", "-N", trafficChain)
-	if _, err := dockerExec(cfg.Container, "iptables", "-t", "mangle", "-C", "PREROUTING", "-j", trafficChain); err != nil {
-		if out, err := dockerExec(cfg.Container, "iptables", "-t", "mangle", "-I", "PREROUTING", "1", "-j", trafficChain); err != nil {
-			return fmt.Errorf("не удалось добавить переход в mangle/PREROUTING: %w (%s)", err, out)
+
+	// Миграция со старой (неверной) точки учёта v0.8: снимаем все переходы из
+	// PREROUTING и, если что-то сняли, обнуляем счётчики, чтобы корректный учёт
+	// на FORWARD стартовал с чистого листа (старые значения были только upload).
+	migrated := false
+	for {
+		if _, err := dockerExec(cfg.Container, "iptables", "-t", "mangle", "-D", "PREROUTING", "-j", trafficChain); err != nil {
+			break
+		}
+		migrated = true
+	}
+	if migrated {
+		_, _ = dockerExec(cfg.Container, "iptables", "-t", "mangle", "-F", trafficChain)
+	}
+
+	if _, err := dockerExec(cfg.Container, "iptables", "-t", "mangle", "-C", "FORWARD", "-j", trafficChain); err != nil {
+		if out, err := dockerExec(cfg.Container, "iptables", "-t", "mangle", "-I", "FORWARD", "1", "-j", trafficChain); err != nil {
+			return fmt.Errorf("не удалось добавить переход в mangle/FORWARD: %w (%s)", err, out)
 		}
 	}
 	return nil
