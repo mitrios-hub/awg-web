@@ -78,6 +78,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  max-width: 1180px;
+  margin: 0 auto;
   padding: 18px 32px;
   border-bottom: 1px solid var(--border-soft);
   position: sticky;
@@ -185,6 +189,10 @@ body {
 .btn--row-reissue:hover { background: rgba(232, 162, 61, 0.12); }
 .btn--row-delete { color: var(--red); border-color: var(--red-dim); }
 .btn--row-delete:hover { background: var(--red); border-color: var(--red); color: #1a0708; }
+
+/* компактные кнопки-иконки в строках таблицы */
+.btn--icon { padding: 6px; gap: 0; }
+.btn--icon .icon { width: 16px; height: 16px; }
 
 .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
@@ -339,13 +347,14 @@ table.peers {
 .peers tbody tr:hover { background: var(--row-hover); }
 
 .col-num { width: 44px; color: var(--text-dim); }
-.col-action { width: 260px; text-align: right; }
+.col-action { width: 150px; text-align: right; }
 
 .name-cell { color: var(--text); font-family: var(--font-ui); font-size: 13px; }
 .name-cell--empty { color: var(--text-dim); }
 
 .ip-cell { color: var(--text-muted); }
 .endpoint-cell { color: var(--text-dim); }
+.traffic-cell { color: var(--text-muted); }
 .hs-cell { color: var(--text-muted); }
 .hs-cell--never { color: var(--text-dim); font-style: italic; }
 

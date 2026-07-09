@@ -15,6 +15,24 @@
 
   const AUTO_REFRESH_MS = 10000;
 
+  // иконки для компактных кнопок в строках
+  const ICONS = {
+    block: '<svg class="icon" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="currentColor"/></svg>',
+    unblock: '<svg class="icon" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="currentColor"/></svg>',
+    reissue: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M4 10a6 6 0 0 1 10.2-4.3M16 10a6 6 0 0 1-10.2 4.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 3v3h-3M6 17v-3h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    delete: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M6 6l8 8M14 6l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  };
+
+  // humanizeBytes — компактный объём (Б/КБ/МБ/ГБ/ТБ), число всегда < 1000.
+  function humanizeBytes(n) {
+    if (n == null || n < 0) return "—";
+    const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+    let f = n, i = 0;
+    while (f >= 1000 && i < units.length - 1) { f /= 1024; i++; }
+    const val = i === 0 ? String(Math.round(f)) : (f >= 100 ? f.toFixed(0) : f.toFixed(1));
+    return val + " " + units[i];
+  }
+
   const els = {
     refreshBtn: document.getElementById("refreshBtn"),
     autoRefreshToggle: document.getElementById("autoRefreshToggle"),
@@ -94,7 +112,7 @@
 
   async function loadUsers() {
     els.refreshBtn.disabled = true;
-    els.tableBody.innerHTML = '<tr><td colspan="7" class="empty-state">Загрузка…</td></tr>';
+    els.tableBody.innerHTML = '<tr><td colspan="8" class="empty-state">Загрузка…</td></tr>';
     try {
       const url = "/api/users?includeNever=" + (state.includeNever ? "true" : "false");
       const res = await fetch(url, { credentials: "same-origin" });
@@ -111,7 +129,7 @@
       render();
     } catch (e) {
       els.tableBody.innerHTML =
-        '<tr><td colspan="7" class="empty-state">Не удалось загрузить данные: ' +
+        '<tr><td colspan="8" class="empty-state">Не удалось загрузить данные: ' +
         escapeHtml(e.message) + "</td></tr>";
       showToast("Ошибка загрузки: " + e.message, true);
     } finally {
@@ -152,7 +170,7 @@
     if (filtered.length === 0) {
       rowEls.clear();
       els.tableBody.innerHTML =
-        '<tr><td colspan="7" class="empty-state">Никого не найдено</td></tr>';
+        '<tr><td colspan="8" class="empty-state">Никого не найдено</td></tr>';
       return;
     }
 
@@ -190,7 +208,7 @@
   // изменилась, строку не трогаем.
   function signature(u) {
     return [
-      u.num, u.name, u.ip, u.endpoint, u.handshake,
+      u.num, u.name, u.ip, u.endpoint, u.trafficBytes, u.handshake,
       u.neverSeen ? 1 : 0, u.blocked ? 1 : 0, u.recentlyActive ? 1 : 0,
     ].join("|");
   }
@@ -199,46 +217,40 @@
   function rowInnerHtml(u) {
     const nameClass = u.name === "—" ? "name-cell name-cell--empty" : "name-cell";
     const hsClass = u.neverSeen ? "hs-cell hs-cell--never" : "hs-cell";
+    const dataAttr = ' data-ip="' + u.ip + '" data-name="' + escapeHtml(u.name) + '"';
 
-    let statusHtml;
-    let actionHtml;
     const reissueBtn =
-      '<button class="btn btn--row btn--row-reissue" data-action="reissue" data-ip="' +
-      u.ip + '" data-name="' + escapeHtml(u.name) + '">Перевыпустить</button>';
+      '<button class="btn btn--row btn--icon btn--row-reissue" data-action="reissue"' + dataAttr +
+      ' title="Перевыпустить" aria-label="Перевыпустить">' + ICONS.reissue + "</button>";
     const deleteBtn =
-      '<button class="btn btn--row btn--row-delete" data-action="delete" data-ip="' +
-      u.ip + '" data-name="' + escapeHtml(u.name) + '">Удалить</button>';
+      '<button class="btn btn--row btn--icon btn--row-delete" data-action="delete"' + dataAttr +
+      ' title="Удалить" aria-label="Удалить">' + ICONS.delete + "</button>";
 
+    let statusHtml, toggleBtn;
     if (u.blocked) {
       statusHtml =
         '<span class="status-pill status-pill--blocked">' +
         '<span class="status-dot status-dot--blocked"></span>Заблокирован</span>';
-      actionHtml =
-        '<div class="row-actions">' +
-        '<button class="btn btn--row btn--row-unblock" data-action="unblock" data-ip="' +
-        u.ip + '" data-name="' + escapeHtml(u.name) + '">Включить</button>' +
-        reissueBtn +
-        deleteBtn +
-        "</div>";
+      toggleBtn =
+        '<button class="btn btn--row btn--icon btn--row-unblock" data-action="unblock"' + dataAttr +
+        ' title="Включить" aria-label="Включить">' + ICONS.unblock + "</button>";
     } else {
       const liveClass = u.recentlyActive ? " status-dot--live" : "";
       statusHtml =
         '<span class="status-pill status-pill--active">' +
         '<span class="status-dot status-dot--active' + liveClass + '"></span>Активен</span>';
-      actionHtml =
-        '<div class="row-actions">' +
-        '<button class="btn btn--row btn--row-block" data-action="block" data-ip="' +
-        u.ip + '" data-name="' + escapeHtml(u.name) + '">Отключить</button>' +
-        reissueBtn +
-        deleteBtn +
-        "</div>";
+      toggleBtn =
+        '<button class="btn btn--row btn--icon btn--row-block" data-action="block"' + dataAttr +
+        ' title="Отключить" aria-label="Отключить">' + ICONS.block + "</button>";
     }
+    const actionHtml = '<div class="row-actions">' + toggleBtn + reissueBtn + deleteBtn + "</div>";
 
     return (
       '<td class="col-num">' + u.num + "</td>" +
       '<td class="' + nameClass + '">' + escapeHtml(u.name) + "</td>" +
       '<td class="ip-cell">' + escapeHtml(u.ip) + "</td>" +
       '<td class="endpoint-cell">' + escapeHtml(u.endpoint) + "</td>" +
+      '<td class="traffic-cell">' + humanizeBytes(u.trafficBytes) + "</td>" +
       '<td class="' + hsClass + '">' + escapeHtml(u.handshake) + "</td>" +
       "<td>" + statusHtml + "</td>" +
       '<td class="col-action">' + actionHtml + "</td>"

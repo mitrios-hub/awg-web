@@ -39,6 +39,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -68,6 +69,7 @@ type User struct {
 	Name           string `json:"name"`
 	Endpoint       string `json:"endpoint"`
 	Handshake      string `json:"handshake"`
+	TrafficBytes   int64  `json:"trafficBytes"`
 	NeverSeen      bool   `json:"neverSeen"`
 	Blocked        bool   `json:"blocked"`
 	RecentlyActive bool   `json:"recentlyActive"`
@@ -76,7 +78,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "0.7"
+const AppVersion = "0.8"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -499,30 +501,57 @@ func fetchWgShow(cfg config.Config) (map[string]wgPeerInfo, error) {
 	return result, nil
 }
 
-// translateHandshakeRu переводит английские единицы времени из вывода wg
-// ("4 minutes, 30 seconds ago") на русский, для единообразия с остальным
-// интерфейсом. Если паттерн не распознан — возвращает как есть (лучше
-// показать по-английски, чем ничего).
-var handshakeWordRe = regexp.MustCompile(`\b(seconds?|minutes?|hours?|days?|weeks?|months?|years?|ago)\b`)
+// formatHandshake превращает текст "latest handshake" из wg
+// ("13 days, 13 hours, 43 minutes, 52 seconds ago") в компактный вид без
+// слова "назад": "13д 13ч 43м 52с". Ведущие и хвостовые нулевые единицы
+// опускаются. Если распознать не удалось (например, абсолютная дата у
+// orphan-пиров) — строка возвращается как есть.
+var handshakeUnitRe = regexp.MustCompile(`(\d+)\s*(week|day|hour|minute|second)s?`)
 
-var handshakeWordMap = map[string]string{
-	"second": "сек", "seconds": "сек",
-	"minute": "мин", "minutes": "мин",
-	"hour": "ч", "hours": "ч",
-	"day": "дн", "days": "дн",
-	"week": "нед", "weeks": "нед",
-	"month": "мес", "months": "мес",
-	"year": "г", "years": "г",
-	"ago": "назад",
-}
-
-func translateHandshakeRu(s string) string {
-	return handshakeWordRe.ReplaceAllStringFunc(s, func(w string) string {
-		if v, ok := handshakeWordMap[w]; ok {
-			return v
+func formatHandshake(s string) string {
+	if s == "" {
+		return ""
+	}
+	var d, h, m, sec int
+	matched := false
+	for _, mm := range handshakeUnitRe.FindAllStringSubmatch(s, -1) {
+		n, _ := strconv.Atoi(mm[1])
+		matched = true
+		switch mm[2] {
+		case "week":
+			d += n * 7
+		case "day":
+			d += n
+		case "hour":
+			h += n
+		case "minute":
+			m += n
+		case "second":
+			sec += n
 		}
-		return w
-	})
+	}
+	if !matched {
+		return s
+	}
+	vals := []int{d, h, m, sec}
+	suf := []string{"д", "ч", "м", "с"}
+	first, last := -1, -1
+	for i, v := range vals {
+		if v > 0 {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	if first < 0 {
+		return "0с"
+	}
+	parts := make([]string, 0, 4)
+	for i := first; i <= last; i++ {
+		parts = append(parts, strconv.Itoa(vals[i])+suf[i])
+	}
+	return strings.Join(parts, " ")
 }
 
 // isRecentHandshake — грубая эвристика "живой прямо сейчас" по тексту от
@@ -645,7 +674,7 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 				endpoint = peer.Endpoint
 			}
 			if peer.HandshakeText != "" {
-				handshake = translateHandshakeRu(peer.HandshakeText)
+				handshake = formatHandshake(peer.HandshakeText)
 				neverSeen = false
 				recentlyActive = isRecentHandshake(peer.HandshakeText)
 			}
@@ -687,6 +716,17 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 	sort.Slice(users, func(i, j int) bool { return ipLess(users[i].IP, users[j].IP) })
 	for i := range users {
 		users[i].Num = i + 1
+	}
+
+	// трафик по клиентам из iptables-счётчиков (кэш ~1 мин; правила для новых/
+	// нативно созданных клиентов добавляются автоматически, счёт с нуля)
+	ips := make([]string, len(users))
+	for i := range users {
+		ips[i] = users[i].IP
+	}
+	traffic := getTraffic(cfg, ips)
+	for i := range users {
+		users[i].TrafficBytes = traffic[users[i].IP]
 	}
 
 	return UsersResponse{
@@ -732,6 +772,114 @@ func unblockIP(cfg config.Config, ip string) error {
 		}
 	}
 	return nil
+}
+
+// ===================== УЧЁТ ТРАФИКА (iptables-счётчики) =====================
+//
+// Трафик считаем правилами-счётчиками в таблице mangle (штатное место для
+// учёта, не мешает маршрутизации). Для каждого клиента два правила в
+// собственной цепочке AWG_ACCT: по источнику (отдано клиентом) и по назначению
+// (получено клиентом) — без -j, поэтому пакет только считается и идёт дальше.
+// Итог по клиенту = сумма обоих. Если правила для клиента нет (новый, создан
+// нативно в Amnezia, или контейнер перезапущен и правила сбросились) — оно
+// добавляется и считается с нуля. Данные кэшируются ~1 мин, чтобы не дёргать
+// iptables на каждый запрос.
+
+const trafficChain = "AWG_ACCT"
+const trafficTTL = 60 * time.Second
+
+var (
+	trafficMu   sync.Mutex
+	trafficAt   time.Time
+	trafficData map[string]int64
+)
+
+// acctRuleRe разбирает строку из "iptables-save -c -t mangle":
+// "[pkts:bytes] -A AWG_ACCT -s 10.8.1.2/32" (или -d).
+var acctRuleRe = regexp.MustCompile(`^\[\d+:(\d+)\]\s+-A\s+` + trafficChain + `\s+(-[sd])\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
+
+// ensureTrafficChain создаёт цепочку AWG_ACCT и вешает переход на неё из
+// mangle/PREROUTING (идемпотентно).
+func ensureTrafficChain(cfg config.Config) error {
+	// -N вернёт ошибку, если цепочка уже есть — это нормально, игнорируем.
+	_, _ = dockerExec(cfg.Container, "iptables", "-t", "mangle", "-N", trafficChain)
+	if _, err := dockerExec(cfg.Container, "iptables", "-t", "mangle", "-C", "PREROUTING", "-j", trafficChain); err != nil {
+		if out, err := dockerExec(cfg.Container, "iptables", "-t", "mangle", "-I", "PREROUTING", "1", "-j", trafficChain); err != nil {
+			return fmt.Errorf("не удалось добавить переход в mangle/PREROUTING: %w (%s)", err, out)
+		}
+	}
+	return nil
+}
+
+// readAcctCounters читает текущие счётчики цепочки AWG_ACCT. up[ip]/down[ip] —
+// байты по источнику/назначению; наличие ключа означает, что правило для этого
+// IP уже есть.
+func readAcctCounters(cfg config.Config) (up, down map[string]int64) {
+	up, down = map[string]int64{}, map[string]int64{}
+	out, err := dockerExec(cfg.Container, "iptables-save", "-c", "-t", "mangle")
+	if err != nil {
+		return up, down
+	}
+	for _, line := range strings.Split(out, "\n") {
+		m := acctRuleRe.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		bytes, _ := strconv.ParseInt(m[1], 10, 64)
+		ip := m[3]
+		if m[2] == "-s" {
+			up[ip] = bytes
+		} else {
+			down[ip] = bytes
+		}
+	}
+	return up, down
+}
+
+// refreshTraffic гарантирует наличие правил для всех переданных IP (добавляя
+// недостающие — счёт с нуля) и возвращает суммарный трафик по каждому.
+func refreshTraffic(cfg config.Config, ips []string) map[string]int64 {
+	if err := ensureTrafficChain(cfg); err != nil {
+		log.Printf("учёт трафика: %v", err)
+		return map[string]int64{}
+	}
+	up, down := readAcctCounters(cfg)
+	for _, ip := range ips {
+		if !ipOnlyRe.MatchString(ip) {
+			continue
+		}
+		if _, ok := up[ip]; !ok {
+			if _, err := dockerExec(cfg.Container, "iptables", "-t", "mangle", "-A", trafficChain, "-s", ip); err == nil {
+				up[ip] = 0
+			}
+		}
+		if _, ok := down[ip]; !ok {
+			if _, err := dockerExec(cfg.Container, "iptables", "-t", "mangle", "-A", trafficChain, "-d", ip); err == nil {
+				down[ip] = 0
+			}
+		}
+	}
+	total := map[string]int64{}
+	for ip, b := range up {
+		total[ip] += b
+	}
+	for ip, b := range down {
+		total[ip] += b
+	}
+	return total
+}
+
+// getTraffic возвращает трафик по клиентам с кэшем ~1 мин (trafficTTL), чтобы
+// не нагружать сервер частыми вызовами iptables.
+func getTraffic(cfg config.Config, ips []string) map[string]int64 {
+	trafficMu.Lock()
+	defer trafficMu.Unlock()
+	if trafficData != nil && time.Since(trafficAt) < trafficTTL {
+		return trafficData
+	}
+	trafficData = refreshTraffic(cfg, ips)
+	trafficAt = time.Now()
+	return trafficData
 }
 
 // ===================== ДОБАВЛЕНИЕ / УДАЛЕНИЕ КЛИЕНТОВ =====================
