@@ -1,5 +1,7 @@
-// awg-web — фронтенд. Данные загружаются по явному действию (кнопка
-// "Обновить") либо, если включён чекбокс "Авто (10с)", по таймеру.
+// awg-web — фронтенд. Данные подтягиваются автоматически раз в секунду и
+// применяются к таблице точечно (без полной перерисовки): меняется только то,
+// что реально изменилось — текст handshake/трафика, индикатор онлайн, а строки
+// плавно добавляются/удаляются при подключении/отключении клиентов.
 
 (() => {
   const state = {
@@ -8,12 +10,10 @@
     fetchedAt: null,
     includeNever: false,
     search: "",
-    statusFilter: "all", // "all" | "active" | "blocked"
-    autoRefresh: false,
-    autoRefreshTimer: null,
+    statusFilter: "all", // "all" | "online" | "blocked"
   };
 
-  const AUTO_REFRESH_MS = 10000;
+  const REFRESH_MS = 1000;
 
   // иконки для компактных кнопок в строках
   const ICONS = {
@@ -35,7 +35,6 @@
 
   const els = {
     refreshBtn: document.getElementById("refreshBtn"),
-    autoRefreshToggle: document.getElementById("autoRefreshToggle"),
     themeToggle: document.getElementById("themeToggle"),
     fetchedAt: document.getElementById("fetchedAt"),
     containerName: document.getElementById("containerName"),
@@ -68,32 +67,6 @@
     addCancel: document.getElementById("addCancel"),
   };
 
-  // ---- автообновление по таймеру (10 сек) ----
-  function stopAutoRefresh() {
-    if (state.autoRefreshTimer) {
-      clearInterval(state.autoRefreshTimer);
-      state.autoRefreshTimer = null;
-    }
-  }
-
-  function startAutoRefresh() {
-    stopAutoRefresh();
-    state.autoRefreshTimer = setInterval(() => {
-      if (document.hidden) return; // не грузим сервер, пока вкладка не активна
-      loadUsers();
-    }, AUTO_REFRESH_MS);
-  }
-
-  function setAutoRefresh(enabled) {
-    state.autoRefresh = enabled;
-    localStorage.setItem("awg-autorefresh", enabled ? "1" : "0");
-    if (enabled) {
-      startAutoRefresh();
-    } else {
-      stopAutoRefresh();
-    }
-  }
-
   function escapeHtml(s) {
     return String(s)
       .replace(/&/g, "&amp;")
@@ -110,9 +83,19 @@
     setTimeout(() => el.remove(), isError ? 8000 : 4000);
   }
 
+  // ---- загрузка данных ----
+  // Первый вызов показывает плейсхолдер "Загрузка…"; последующие (фоновый
+  // опрос раз в секунду) молча обновляют таблицу и при ошибке НЕ трогают её —
+  // держим последние удачные данные. inFlight не даёт запросам наслаиваться.
+  let firstLoad = true;
+  let inFlight = false;
+
   async function loadUsers() {
-    els.refreshBtn.disabled = true;
-    els.tableBody.innerHTML = '<tr><td colspan="8" class="empty-state">Загрузка…</td></tr>';
+    if (inFlight) return;
+    inFlight = true;
+    if (firstLoad) {
+      els.tableBody.innerHTML = '<tr><td colspan="8" class="empty-state">Загрузка…</td></tr>';
+    }
     try {
       const url = "/api/users?includeNever=" + (state.includeNever ? "true" : "false");
       const res = await fetch(url, { credentials: "same-origin" });
@@ -127,22 +110,111 @@
       els.containerName.textContent = "контейнер: " + (data.container || "—");
       els.appVersion.textContent = data.version ? "v" + data.version : "";
       render();
+      firstLoad = false;
     } catch (e) {
-      els.tableBody.innerHTML =
-        '<tr><td colspan="8" class="empty-state">Не удалось загрузить данные: ' +
-        escapeHtml(e.message) + "</td></tr>";
-      showToast("Ошибка загрузки: " + e.message, true);
+      if (firstLoad) {
+        els.tableBody.innerHTML =
+          '<tr><td colspan="8" class="empty-state">Не удалось загрузить данные: ' +
+          escapeHtml(e.message) + "</td></tr>";
+        showToast("Ошибка загрузки: " + e.message, true);
+      }
     } finally {
-      els.refreshBtn.disabled = false;
+      inFlight = false;
     }
   }
 
-  // rowEls — соответствие ip → { tr, sig } для точечного обновления DOM.
-  // Ключ — IP (уникален на пира и уже используется как data-ip). Благодаря
-  // этому при обновлении данных перерисовываются только реально изменившиеся
-  // строки, а неизменившиеся сохраняют свой DOM-узел (нет мигания, не
-  // пересоздаются кнопки/картинки).
+  // rowEls — ip → { tr, ссылки на ячейки, закэшированные значения }. Строим
+  // строку один раз, дальше правим только изменившиеся ячейки — без перезаписи
+  // innerHTML всей строки (нет мигания, не пересоздаются кнопки, не сбрасывается
+  // анимация пульса).
   const rowEls = new Map();
+
+  function statusPillHtml(u) {
+    if (u.blocked) {
+      return '<span class="status-pill status-pill--blocked">' +
+        '<span class="status-dot status-dot--blocked"></span>Заблокирован</span>';
+    }
+    const live = u.recentlyActive ? " status-dot--live" : "";
+    return '<span class="status-pill status-pill--active">' +
+      '<span class="status-dot status-dot--active' + live + '"></span>Активен</span>';
+  }
+
+  function actionCellHtml(u) {
+    const dataAttr = ' data-ip="' + u.ip + '" data-name="' + escapeHtml(u.name) + '"';
+    const toggle = u.blocked
+      ? '<button class="btn btn--row btn--icon btn--row-unblock" data-action="unblock"' + dataAttr +
+        ' title="Включить" aria-label="Включить">' + ICONS.unblock + "</button>"
+      : '<button class="btn btn--row btn--icon btn--row-block" data-action="block"' + dataAttr +
+        ' title="Отключить" aria-label="Отключить">' + ICONS.block + "</button>";
+    const reissue = '<button class="btn btn--row btn--icon btn--row-reissue" data-action="reissue"' + dataAttr +
+      ' title="Перевыпустить" aria-label="Перевыпустить">' + ICONS.reissue + "</button>";
+    const del = '<button class="btn btn--row btn--icon btn--row-delete" data-action="delete"' + dataAttr +
+      ' title="Удалить" aria-label="Удалить">' + ICONS.delete + "</button>";
+    return '<div class="row-actions">' + toggle + reissue + del + "</div>";
+  }
+
+  function buildRow(u) {
+    const tr = document.createElement("tr");
+    tr.dataset.ip = u.ip;
+    tr.innerHTML =
+      '<td class="col-num"></td>' +
+      "<td></td>" +
+      '<td class="ip-cell"></td>' +
+      '<td class="endpoint-cell"></td>' +
+      '<td class="traffic-cell"></td>' +
+      "<td></td>" +
+      "<td></td>" +
+      '<td class="col-action"></td>';
+    const c = tr.children;
+    const entry = {
+      tr,
+      cNum: c[0], cName: c[1], cIp: c[2], cEndpoint: c[3],
+      cTraffic: c[4], cHs: c[5], cStatus: c[6], cAction: c[7],
+    };
+    entry.cIp.textContent = u.ip; // IP статичен (это ключ строки)
+    updateRow(entry, u, true);
+    return entry;
+  }
+
+  function updateRow(e, u, init) {
+    if (init || e.vNum !== u.num) {
+      e.cNum.textContent = u.num;
+      e.vNum = u.num;
+    }
+    if (init || e.vName !== u.name) {
+      e.cName.textContent = u.name;
+      e.cName.className = u.name === "—" ? "name-cell name-cell--empty" : "name-cell";
+      e.vName = u.name;
+    }
+    if (init || e.vEndpoint !== u.endpoint) {
+      e.cEndpoint.textContent = u.endpoint;
+      e.vEndpoint = u.endpoint;
+    }
+    const tStr = humanizeBytes(u.trafficBytes);
+    if (init || e.vTraffic !== tStr) {
+      e.cTraffic.textContent = tStr;
+      e.vTraffic = tStr;
+    }
+    if (init || e.vHs !== u.handshake || e.vNeverSeen !== u.neverSeen) {
+      e.cHs.textContent = u.handshake;
+      e.cHs.className = u.neverSeen ? "hs-cell hs-cell--never" : "hs-cell";
+      e.vHs = u.handshake;
+      e.vNeverSeen = u.neverSeen;
+    }
+    // Статус и кнопки перестраиваем только при смене признака блокировки —
+    // тяжёлую часть (иконки) не трогаем каждую секунду.
+    if (init || e.vBlocked !== u.blocked) {
+      e.cStatus.innerHTML = statusPillHtml(u);
+      e.cAction.innerHTML = actionCellHtml(u);
+      e.vBlocked = u.blocked;
+      e.vRecentlyActive = u.recentlyActive;
+    } else if (!u.blocked && e.vRecentlyActive !== u.recentlyActive) {
+      // только индикатор "онлайн" (пульс) — тоггл класса без перестройки
+      const dot = e.cStatus.querySelector(".status-dot--active");
+      if (dot) dot.classList.toggle("status-dot--live", u.recentlyActive);
+      e.vRecentlyActive = u.recentlyActive;
+    }
+  }
 
   function render() {
     if (state.summary) {
@@ -161,100 +233,44 @@
       if (state.statusFilter === "online" && !u.recentlyActive) return false;
       if (state.statusFilter === "blocked" && !u.blocked) return false;
       if (!q) return true;
-      return (
-        u.name.toLowerCase().includes(q) ||
-        u.ip.toLowerCase().includes(q)
-      );
+      return u.name.toLowerCase().includes(q) || u.ip.toLowerCase().includes(q);
     });
+
+    const tbody = els.tableBody;
 
     if (filtered.length === 0) {
       rowEls.clear();
-      els.tableBody.innerHTML =
-        '<tr><td colspan="8" class="empty-state">Никого не найдено</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Никого не найдено</td></tr>';
       return;
     }
 
-    // Keyed-реконсиляция: строим фрагмент в нужном порядке, переиспользуя
-    // существующие <tr> и обновляя их содержимое только при изменении данных.
-    const frag = document.createDocumentFragment();
-    const seen = new Set();
+    // убрать плейсхолдер ("Загрузка…"/"Никого не найдено") — у него нет data-ip
+    const ph = tbody.querySelector("tr:not([data-ip])");
+    if (ph) ph.remove();
 
+    // реконсиляция по ключу-IP: существующие строки обновляем на месте,
+    // новые вставляем в нужную позицию, исчезнувшие удаляем
+    const desired = new Set();
+    let prev = null;
     for (const u of filtered) {
-      seen.add(u.ip);
-      const sig = signature(u);
+      desired.add(u.ip);
       let entry = rowEls.get(u.ip);
       if (!entry) {
-        const tr = document.createElement("tr");
-        tr.dataset.ip = u.ip;
-        tr.innerHTML = rowInnerHtml(u);
-        entry = { tr, sig };
+        entry = buildRow(u);
         rowEls.set(u.ip, entry);
-      } else if (entry.sig !== sig) {
-        entry.tr.innerHTML = rowInnerHtml(u);
-        entry.sig = sig;
+      } else {
+        updateRow(entry, u, false);
       }
-      frag.appendChild(entry.tr); // перенос существующего узла сохраняет его DOM
+      const ref = prev ? prev.nextSibling : tbody.firstChild;
+      if (ref !== entry.tr) tbody.insertBefore(entry.tr, ref);
+      prev = entry.tr;
     }
-
-    // выкидываем строки, которых больше нет в наборе
-    for (const ip of Array.from(rowEls.keys())) {
-      if (!seen.has(ip)) rowEls.delete(ip);
+    for (const [ip, entry] of rowEls) {
+      if (!desired.has(ip)) {
+        entry.tr.remove();
+        rowEls.delete(ip);
+      }
     }
-
-    els.tableBody.replaceChildren(frag);
-  }
-
-  // signature — строка из полей, влияющих на отображение строки. Если она не
-  // изменилась, строку не трогаем.
-  function signature(u) {
-    return [
-      u.num, u.name, u.ip, u.endpoint, u.trafficBytes, u.handshake,
-      u.neverSeen ? 1 : 0, u.blocked ? 1 : 0, u.recentlyActive ? 1 : 0,
-    ].join("|");
-  }
-
-  // rowInnerHtml — содержимое строки (набор <td>) без обёртки <tr>.
-  function rowInnerHtml(u) {
-    const nameClass = u.name === "—" ? "name-cell name-cell--empty" : "name-cell";
-    const hsClass = u.neverSeen ? "hs-cell hs-cell--never" : "hs-cell";
-    const dataAttr = ' data-ip="' + u.ip + '" data-name="' + escapeHtml(u.name) + '"';
-
-    const reissueBtn =
-      '<button class="btn btn--row btn--icon btn--row-reissue" data-action="reissue"' + dataAttr +
-      ' title="Перевыпустить" aria-label="Перевыпустить">' + ICONS.reissue + "</button>";
-    const deleteBtn =
-      '<button class="btn btn--row btn--icon btn--row-delete" data-action="delete"' + dataAttr +
-      ' title="Удалить" aria-label="Удалить">' + ICONS.delete + "</button>";
-
-    let statusHtml, toggleBtn;
-    if (u.blocked) {
-      statusHtml =
-        '<span class="status-pill status-pill--blocked">' +
-        '<span class="status-dot status-dot--blocked"></span>Заблокирован</span>';
-      toggleBtn =
-        '<button class="btn btn--row btn--icon btn--row-unblock" data-action="unblock"' + dataAttr +
-        ' title="Включить" aria-label="Включить">' + ICONS.unblock + "</button>";
-    } else {
-      const liveClass = u.recentlyActive ? " status-dot--live" : "";
-      statusHtml =
-        '<span class="status-pill status-pill--active">' +
-        '<span class="status-dot status-dot--active' + liveClass + '"></span>Активен</span>';
-      toggleBtn =
-        '<button class="btn btn--row btn--icon btn--row-block" data-action="block"' + dataAttr +
-        ' title="Отключить" aria-label="Отключить">' + ICONS.block + "</button>";
-    }
-    const actionHtml = '<div class="row-actions">' + toggleBtn + reissueBtn + deleteBtn + "</div>";
-
-    return (
-      '<td class="col-num">' + u.num + "</td>" +
-      '<td class="' + nameClass + '">' + escapeHtml(u.name) + "</td>" +
-      '<td class="ip-cell">' + escapeHtml(u.ip) + "</td>" +
-      '<td class="endpoint-cell">' + escapeHtml(u.endpoint) + "</td>" +
-      '<td class="traffic-cell">' + humanizeBytes(u.trafficBytes) + "</td>" +
-      '<td class="' + hsClass + '">' + escapeHtml(u.handshake) + "</td>" +
-      "<td>" + statusHtml + "</td>" +
-      '<td class="col-action">' + actionHtml + "</td>"
-    );
   }
 
   function onActionClick(btn) {
@@ -302,8 +318,7 @@
         throw new Error(err.error || ("HTTP " + res.status));
       }
       showToast(action === "block" ? "Пользователь отключён" : "Пользователь включён", false);
-      // обновляем локально статус без полного перезапроса всех данных,
-      // как и в bash-версии — полный список подтянется по кнопке "Обновить"
+      // локально отражаем статус сразу; полный список подтянется ближайшим тиком
       const u = state.users.find((x) => x.ip === ip);
       if (u) u.blocked = action === "block";
       render();
@@ -335,7 +350,7 @@
       if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
       showClientConfig(data, "Клиент перевыпущен", data.name + " (" + data.ip + ") — новый конфиг готов");
       showToast("Клиент перевыпущен", false);
-      loadUsers(); // clientId сменился — подтягиваем актуальные данные
+      loadUsers();
     } catch (e) {
       showToast("Не удалось перевыпустить: " + e.message, true);
     }
@@ -500,25 +515,15 @@
   });
   els.includeNeverToggle.addEventListener("change", (e) => {
     state.includeNever = e.target.checked;
-    loadUsers();
-  });
-  els.autoRefreshToggle.addEventListener("change", (e) => {
-    setAutoRefresh(e.target.checked);
+    loadUsers(); // строки "не подключавшихся" плавно добавятся/уберутся реконсиляцией
   });
   document.addEventListener("visibilitychange", () => {
-    // при возврате на вкладку сразу подтягиваем свежие данные,
-    // если автообновление включено
-    if (!document.hidden && state.autoRefresh) {
-      loadUsers();
-    }
+    if (!document.hidden) loadUsers();
   });
 
-  // восстановление сохранённого состояния автообновления
-  if (localStorage.getItem("awg-autorefresh") === "1") {
-    els.autoRefreshToggle.checked = true;
-    setAutoRefresh(true);
-  }
-
-  // первичная загрузка при открытии страницы
+  // первичная загрузка + автообновление раз в секунду (когда вкладка активна)
   loadUsers();
+  setInterval(() => {
+    if (!document.hidden) loadUsers();
+  }, REFRESH_MS);
 })();

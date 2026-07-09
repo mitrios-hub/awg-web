@@ -78,7 +78,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "0.9"
+const AppVersion = "1.0"
 
 type Summary struct {
 	Total     int `json:"total"`
