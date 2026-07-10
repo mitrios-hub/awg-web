@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"path"
 	"regexp"
@@ -79,7 +80,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "1.2"
+const AppVersion = "1.3"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -638,6 +639,7 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 	users := make([]User, 0, len(keys))
 	summary := Summary{}
 	num := 0
+	trafficTotals := getTraffic(cfg) // накопленный трафик по ключу клиента
 
 	for _, key := range keys {
 		peer, haveLive := wgPeers[key]
@@ -708,6 +710,7 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 			Name:           name,
 			Endpoint:       endpoint,
 			Handshake:      handshake,
+			TrafficBytes:   trafficTotals[key],
 			NeverSeen:      neverSeen,
 			Blocked:        isBlocked,
 			RecentlyActive: recentlyActive,
@@ -717,17 +720,6 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 	sort.Slice(users, func(i, j int) bool { return ipLess(users[i].IP, users[j].IP) })
 	for i := range users {
 		users[i].Num = i + 1
-	}
-
-	// трафик по клиентам из iptables-счётчиков (кэш ~1 мин; правила для новых/
-	// нативно созданных клиентов добавляются автоматически, счёт с нуля)
-	ips := make([]string, len(users))
-	for i := range users {
-		ips[i] = users[i].IP
-	}
-	traffic := getTraffic(cfg, ips)
-	for i := range users {
-		users[i].TrafficBytes = traffic[users[i].IP]
 	}
 
 	return UsersResponse{
@@ -775,25 +767,42 @@ func unblockIP(cfg config.Config, ip string) error {
 	return nil
 }
 
-// ===================== УЧЁТ ТРАФИКА (iptables-счётчики) =====================
+// ===================== УЧЁТ ТРАФИКА (персистентный) =====================
 //
-// Трафик считаем правилами-счётчиками в таблице mangle (штатное место для
-// учёта, не мешает маршрутизации). Для каждого клиента два правила в
-// собственной цепочке AWG_ACCT: по источнику (отдано клиентом) и по назначению
-// (получено клиентом) — без -j, поэтому пакет только считается и идёт дальше.
-// Итог по клиенту = сумма обоих. Если правила для клиента нет (новый, создан
-// нативно в Amnezia, или контейнер перезапущен и правила сбросились) — оно
-// добавляется и считается с нуля. Данные кэшируются очень коротко (trafficTTL),
-// только чтобы схлопнуть всплеск одновременных запросов (несколько вкладок), —
-// по сути обновляются каждую секунду вместе с опросом фронтенда.
+// Считаем правилами-счётчиками в mangle/FORWARD (цепочка AWG_ACCT): на каждого
+// клиента два правила — по источнику (отдано, upload) и по назначению (получено,
+// download). Счётчики iptables живут в ядре контейнера и обнуляются при его
+// перезапуске, поэтому поверх них ведём ПЕРСИСТЕНТНЫЙ накопитель: периодически
+// читаем счётчики, добавляем дельту к сохранённому итогу (если счётчик сбросился
+// — текущее значение меньше прошлого — берём текущее как дельту) и пишем в файл
+// на диске хоста (traffic_state_path). Итог по клиенту переживает перезапуск и
+// контейнера, и самого awg-web. Ключ — публичный ключ клиента (стабилен).
+//
+// Первичный сид берётся из накопительных полей Amnezia (dataReceived/dataSent в
+// clientsTable) — чтобы стартовать с реального lifetime, а не с нуля; дальше
+// растём по своим дельтам (поля Amnezia приложение обновляет редко).
 
 const trafficChain = "AWG_ACCT"
-const trafficTTL = 500 * time.Millisecond
+const trafficMinInterval = 500 * time.Millisecond // не дёргать iptables чаще
+const trafficPersistEvery = 30 * time.Second      // как часто писать файл
+const trafficPollEvery = 30 * time.Second         // фоновый опрос (панель закрыта)
+
+// trafficRec — накопленный трафик клиента. Last* — последнее сырое значение
+// счётчика iptables (для вычисления дельты между опросами).
+type trafficRec struct {
+	Up       int64 `json:"up"`
+	Down     int64 `json:"down"`
+	LastUp   int64 `json:"lastUp"`
+	LastDown int64 `json:"lastDown"`
+	Seeded   bool  `json:"seeded"`
+}
 
 var (
-	trafficMu   sync.Mutex
-	trafficAt   time.Time
-	trafficData map[string]int64
+	trafficMu        sync.Mutex
+	trafficState     = map[string]*trafficRec{}
+	trafficStatePath string
+	trafficLastPoll  time.Time
+	trafficLastSave  time.Time
 )
 
 // acctRuleRe разбирает строку из "iptables-save -c -t mangle":
@@ -859,15 +868,105 @@ func readAcctCounters(cfg config.Config) (up, down map[string]int64) {
 	return up, down
 }
 
-// refreshTraffic гарантирует наличие правил для всех переданных IP (добавляя
-// недостающие — счёт с нуля) и возвращает суммарный трафик по каждому.
-func refreshTraffic(cfg config.Config, ips []string) map[string]int64 {
+// parseAmneziaBytes разбирает человекочитаемый объём Amnezia ("7.24GiB",
+// "688.75MiB", "16.86KiB", "512B") в байты (двоичные единицы).
+var amzBytesRe = regexp.MustCompile(`([0-9.]+)\s*([KMGT]?i?B)`)
+
+func parseAmneziaBytes(s string) int64 {
+	m := amzBytesRe.FindStringSubmatch(strings.TrimSpace(s))
+	if m == nil {
+		return 0
+	}
+	v, _ := strconv.ParseFloat(m[1], 64)
+	switch m[2] {
+	case "KiB":
+		v *= 1 << 10
+	case "MiB":
+		v *= 1 << 20
+	case "GiB":
+		v *= 1 << 30
+	case "TiB":
+		v *= 1 << 40
+	}
+	return int64(v)
+}
+
+// readAmneziaTotals читает накопительные dataSent/dataReceived из clientsTable
+// (по публичному ключу). sent — отдано клиентом (upload), recv — получено (down).
+func readAmneziaTotals(cfg config.Config) (sent, recv map[string]int64) {
+	sent, recv = map[string]int64{}, map[string]int64{}
+	raw, err := dockerExec(cfg.Container, "cat", cfg.ClientsTablePath)
+	if err != nil {
+		return
+	}
+	var entries []ClientEntry
+	if json.Unmarshal([]byte(raw), &entries) != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.ClientID == "" {
+			continue
+		}
+		sent[e.ClientID] = parseAmneziaBytes(e.UserData.DataSent)
+		recv[e.ClientID] = parseAmneziaBytes(e.UserData.DataReceived)
+	}
+	return
+}
+
+// loadTrafficState загружает сохранённый накопитель с диска (при старте awg-web).
+func loadTrafficState(path string) {
+	trafficStatePath = path
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var st map[string]*trafficRec
+	if json.Unmarshal(data, &st) == nil && st != nil {
+		trafficState = st
+	}
+}
+
+// saveTrafficStateLocked пишет накопитель на диск атомарно. Вызывать под trafficMu.
+func saveTrafficStateLocked() {
+	if trafficStatePath == "" {
+		return
+	}
+	data, err := json.MarshalIndent(trafficState, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := trafficStatePath + ".tmp"
+	if os.WriteFile(tmp, data, 0600) == nil {
+		_ = os.Rename(tmp, trafficStatePath)
+	}
+}
+
+// accumulateLocked читает счётчики iptables и добавляет дельты в накопитель.
+// Заводит недостающие правила и сидирует новых клиентов базой из Amnezia.
+// Вызывать под trafficMu.
+func accumulateLocked(cfg config.Config) {
 	if err := ensureTrafficChain(cfg); err != nil {
 		log.Printf("учёт трафика: %v", err)
-		return map[string]int64{}
+		return
 	}
+	conf, err := dockerExec(cfg.Container, "cat", cfg.WgConfPath)
+	if err != nil {
+		return
+	}
+	ipToKey := map[string]string{} // ip -> публичный ключ клиента
+	for _, p := range parseConfPeers(conf) {
+		ip := strings.SplitN(strings.SplitN(p.AllowedIPs, ",", 2)[0], "/", 2)[0]
+		if ip != "" {
+			ipToKey[ip] = p.PublicKey
+		}
+	}
+
 	up, down := readAcctCounters(cfg)
-	for _, ip := range ips {
+	// заводим недостающие правила (новые/нативные клиенты) — счёт с нуля
+	for ip := range ipToKey {
 		if !ipOnlyRe.MatchString(ip) {
 			continue
 		}
@@ -882,28 +981,77 @@ func refreshTraffic(cfg config.Config, ips []string) map[string]int64 {
 			}
 		}
 	}
-	total := map[string]int64{}
-	for ip, b := range up {
-		total[ip] += b
+
+	// база из Amnezia — читаем только если есть несидированные клиенты
+	var amSent, amRecv map[string]int64
+	for _, key := range ipToKey {
+		if r := trafficState[key]; r == nil || !r.Seeded {
+			amSent, amRecv = readAmneziaTotals(cfg)
+			break
+		}
 	}
-	for ip, b := range down {
-		total[ip] += b
+
+	for ip, key := range ipToKey {
+		rec := trafficState[key]
+		if rec == nil {
+			rec = &trafficRec{}
+			trafficState[key] = rec
+		}
+		cu, cd := up[ip], down[ip]
+		if !rec.Seeded {
+			if amSent != nil {
+				rec.Up = amSent[key]
+				rec.Down = amRecv[key]
+			}
+			rec.LastUp, rec.LastDown = cu, cd
+			rec.Seeded = true
+			continue
+		}
+		du := cu - rec.LastUp
+		if du < 0 { // счётчик сбросился (рестарт контейнера) — берём текущее
+			du = cu
+		}
+		dd := cd - rec.LastDown
+		if dd < 0 {
+			dd = cd
+		}
+		rec.Up += du
+		rec.Down += dd
+		rec.LastUp, rec.LastDown = cu, cd
 	}
-	return total
 }
 
-// getTraffic возвращает трафик по клиентам. Короткий кэш (trafficTTL) лишь
-// схлопывает одновременные запросы; при опросе раз в секунду данные фактически
-// обновляются каждую секунду.
-func getTraffic(cfg config.Config, ips []string) map[string]int64 {
+// getTraffic обновляет накопитель (не чаще trafficMinInterval) и возвращает
+// суммарный трафик по КЛЮЧУ клиента (up+down).
+func getTraffic(cfg config.Config) map[string]int64 {
 	trafficMu.Lock()
 	defer trafficMu.Unlock()
-	if trafficData != nil && time.Since(trafficAt) < trafficTTL {
-		return trafficData
+	if time.Since(trafficLastPoll) >= trafficMinInterval {
+		accumulateLocked(cfg)
+		trafficLastPoll = time.Now()
+		if time.Since(trafficLastSave) >= trafficPersistEvery {
+			saveTrafficStateLocked()
+			trafficLastSave = time.Now()
+		}
 	}
-	trafficData = refreshTraffic(cfg, ips)
-	trafficAt = time.Now()
-	return trafficData
+	out := make(map[string]int64, len(trafficState))
+	for k, r := range trafficState {
+		out[k] = r.Up + r.Down
+	}
+	return out
+}
+
+// trafficLoop — фоновый опрос, чтобы учёт шёл даже когда панель никто не открыл.
+func trafficLoop(cfg config.Config) {
+	for {
+		trafficMu.Lock()
+		accumulateLocked(cfg)
+		trafficLastPoll = time.Now()
+		saveTrafficStateLocked()
+		trafficLastSave = time.Now()
+		trafficMu.Unlock()
+		time.Sleep(trafficPollEvery)
+	}
 }
 
 // ===================== ДОБАВЛЕНИЕ / УДАЛЕНИЕ КЛИЕНТОВ =====================
@@ -1517,6 +1665,10 @@ func main() {
 		log.Println("⚠ tls_cert_path/tls_key_path не заданы в конфиге — сервер поднимается по НЕЗАШИФРОВАННОМУ HTTP. " +
 			"Basic Auth без TLS передаёт пароль практически открытым текстом. Не открывай этот порт в интернет напрямую.")
 	}
+
+	// персистентный учёт трафика: загрузка накопителя с диска + фоновый опрос
+	loadTrafficState(cfg.TrafficStatePath)
+	go trafficLoop(cfg)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

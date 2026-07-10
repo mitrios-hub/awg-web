@@ -9,5 +9,6 @@
   "auth_user": "admin",
   "auth_pass_hash": "",
   "tls_cert_path": "",
-  "tls_key_path": ""
+  "tls_key_path": "",
+  "traffic_state_path": "./awg-web-traffic.json"
 }

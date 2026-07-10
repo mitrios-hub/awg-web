@@ -42,6 +42,11 @@ type Config struct {
 	// это ошибка конфигурации, сервер откажется стартовать.
 	TLSCertPath string `json:"tls_cert_path"`
 	TLSKeyPath  string `json:"tls_key_path"`
+
+	// TrafficStatePath — файл на диске хоста, где персистится накопленный
+	// трафик по клиентам (переживает перезапуск контейнера и awg-web).
+	// Пустая строка отключает персистентность (трафик только в памяти).
+	TrafficStatePath string `json:"traffic_state_path"`
 }
 
 func DefaultConfig() Config {
@@ -53,6 +58,7 @@ func DefaultConfig() Config {
 		WgConfPath:       "/opt/amnezia/awg/wg0.conf",
 		ClientDNS:        "1.1.1.1, 1.0.0.1",
 		AuthUser:         "admin",
+		TrafficStatePath: "./awg-web-traffic.json",
 	}
 }
 
