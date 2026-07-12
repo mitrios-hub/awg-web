@@ -5,6 +5,8 @@
 
 ## WEB-приложение для контроля клиентов Amnezia-VPN
 
+![Screenshot](ScreenShot.png?raw=true)
+
 ### Описание
 **ВНИМАНИЕ** при изменении конфига перезапустить сервис `systemctl restart awg-web`!
 
