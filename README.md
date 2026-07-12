@@ -1,11 +1,9 @@
 ## Установка и интерфейс
 Смотри QUICKSTART.md в коревой директории
 
-Смотри ScreenShot.png в корневой директории
-
 ## WEB-приложение для контроля клиентов Amnezia-VPN
 
-![](ScreenShot.png?raw=true)
+![Смотри ScreenShot.png в корневой директории](ScreenShot.png?raw=true)
 
 ### Описание
 **ВНИМАНИЕ** при изменении конфига перезапустить сервис `systemctl restart awg-web`!
