@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AmneziaWG · Вход</title>
+<style>
+  :root{--bg:#0a0e14;--panel:#121924;--border:#212b38;--text:#e7edf5;--muted:#7c8a9c;--teal:#35d0ba;--red:#f2545b}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:var(--bg);color:var(--text);
+       font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+        padding:28px;width:320px;max-width:calc(100vw - 32px);box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .title{font-family:ui-monospace,Consolas,monospace;font-weight:600;font-size:17px;letter-spacing:.02em}
+  .sub{color:var(--muted);font-size:13px;margin-top:2px;margin-bottom:18px}
+  label{display:block;font-size:12px;color:var(--muted);margin:12px 0 6px}
+  input{width:100%;padding:10px 12px;background:#161f2c;border:1px solid var(--border);
+        border-radius:6px;color:var(--text);font-size:14px;outline:none}
+  input:focus{border-color:var(--teal)}
+  button{width:100%;margin-top:20px;padding:11px;background:var(--teal);border:none;border-radius:6px;
+         color:#04110f;font-weight:600;font-size:14px;cursor:pointer}
+  button:hover{background:#4ee0cb}
+  button:disabled{opacity:.6;cursor:default}
+  .err{color:var(--red);font-size:13px;margin-top:14px;min-height:18px;text-align:center}
+</style>
+</head>
+<body>
+<form class="card" id="loginForm">
+  <div class="title">AmneziaWG</div>
+  <div class="sub">Панель управления — вход</div>
+  <label for="u">Логин</label>
+  <input id="u" name="username" autocomplete="username" autofocus>
+  <label for="p">Пароль</label>
+  <input id="p" name="password" type="password" autocomplete="current-password">
+  <button type="submit" id="btn">Войти</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+  var form = document.getElementById('loginForm');
+  var err = document.getElementById('err');
+  var btn = document.getElementById('btn');
+  form.addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    err.textContent = '';
+    btn.disabled = true;
+    try {
+      var res = await fetch('/api/login', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user: document.getElementById('u').value,
+          password: document.getElementById('p').value
+        })
+      });
+      if (res.ok) { location.href = '/'; return; }
+      var d = await res.json().catch(function () { return {}; });
+      err.textContent = d.error || 'Ошибка входа';
+    } catch (e) {
+      err.textContent = 'Сеть недоступна';
+    }
+    btn.disabled = false;
+  });
+</script>
+</body>
+</html>
