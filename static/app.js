@@ -35,6 +35,7 @@
 
   const els = {
     themeToggle: document.getElementById("themeToggle"),
+    logoutBtn: document.getElementById("logoutBtn"),
     fetchedAt: document.getElementById("fetchedAt"),
     containerName: document.getElementById("containerName"),
     appVersion: document.getElementById("appVersion"),
@@ -105,6 +106,7 @@
     try {
       const url = "/api/users?includeNever=" + (state.includeNever ? "true" : "false");
       const res = await fetch(url, { credentials: "same-origin" });
+      if (res.status === 401) { location.href = "/login"; return; }
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || ("HTTP " + res.status));
@@ -594,6 +596,16 @@
     const next = current === "light" ? "dark" : "light";
     document.documentElement.setAttribute("data-theme", next);
     localStorage.setItem("awg-theme", next);
+  });
+
+  // ---- выход ----
+  els.logoutBtn.addEventListener("click", async () => {
+    try {
+      await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+    } catch (e) {
+      /* всё равно уходим на логин */
+    }
+    location.href = "/login";
   });
 
   // ---- events ----

@@ -28,7 +28,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -80,7 +82,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "1.3"
+const AppVersion = "1.4"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -1605,23 +1607,123 @@ func restoreBackup(cfg config.Config, b BackupBundle, full bool) (int, error) {
 	return len(b.Clients), nil
 }
 
-// ===================== АУТЕНТИФИКАЦИЯ (bcrypt) =====================
+// ===================== АУТЕНТИФИКАЦИЯ (сессии на cookie) =====================
+//
+// Логин один раз (POST /api/login, пароль сверяется с bcrypt-хэшем из конфига),
+// сервер выдаёт session-токен в HttpOnly-cookie. Токены хранятся ТОЛЬКО в
+// памяти — живут до перезапуска awg-web (после рестарта нужно войти заново).
+// Для API/curl дополнительно принимается обычный Basic Auth. Нативный
+// browser-диалог не всплывает: на 401 мы НЕ шлём WWW-Authenticate, а навигация
+// уходит на /login.
 
-// bcryptBasicAuth — Basic Auth со сравнением пароля через bcrypt-хэш из
-// конфига (вместо gin.BasicAuth, который сравнивает пароли в открытом виде).
-func bcryptBasicAuth(user, hash string) gin.HandlerFunc {
+const sessionCookie = "awg_session"
+const sessionTTL = 7 * 24 * time.Hour
+
+var (
+	sessMu   sync.Mutex
+	sessions = map[string]time.Time{} // токен -> момент истечения
+)
+
+func newToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func createSession() string {
+	tok := newToken()
+	sessMu.Lock()
+	sessions[tok] = time.Now().Add(sessionTTL)
+	sessMu.Unlock()
+	return tok
+}
+
+// validSession проверяет cookie и продлевает срок жизни (скользящее окно).
+func validSession(c *gin.Context) bool {
+	tok, err := c.Cookie(sessionCookie)
+	if err != nil || tok == "" {
+		return false
+	}
+	sessMu.Lock()
+	defer sessMu.Unlock()
+	exp, ok := sessions[tok]
+	if !ok || time.Now().After(exp) {
+		delete(sessions, tok)
+		return false
+	}
+	sessions[tok] = time.Now().Add(sessionTTL)
+	return true
+}
+
+func dropSession(tok string) {
+	sessMu.Lock()
+	delete(sessions, tok)
+	sessMu.Unlock()
+}
+
+// checkCreds сверяет логин/пароль с конфигом (bcrypt).
+func checkCreds(cfg config.Config, user, pass string) bool {
+	return subtleEqual(user, cfg.AuthUser) &&
+		bcrypt.CompareHashAndPassword([]byte(cfg.AuthPassHash), []byte(pass)) == nil
+}
+
+func setSessionCookie(c *gin.Context, tok string, tls bool) {
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    tok,
+		Path:     "/",
+		MaxAge:   int(sessionTTL / time.Second),
+		HttpOnly: true,
+		Secure:   tls,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// sessionAuth пускает по валидной сессии либо по Basic Auth (для API/curl).
+// Иначе для /api/* — 401 JSON без WWW-Authenticate (чтобы браузер не показывал
+// нативный диалог), для остального (навигация) — редирект на /login.
+func sessionAuth(cfg config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		reqUser, reqPass, ok := c.Request.BasicAuth()
-		validUser := ok && subtleEqual(reqUser, user)
-		validPass := ok && bcrypt.CompareHashAndPassword([]byte(hash), []byte(reqPass)) == nil
-
-		if !validUser || !validPass {
-			c.Header("WWW-Authenticate", `Basic realm="awg-web"`)
-			c.AbortWithStatus(http.StatusUnauthorized)
+		if validSession(c) {
+			c.Next()
 			return
 		}
-		c.Next()
+		if u, p, ok := c.Request.BasicAuth(); ok && checkCreds(cfg, u, p) {
+			c.Next()
+			return
+		}
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "требуется вход"})
+		} else {
+			c.Redirect(http.StatusFound, "/login")
+			c.Abort()
+		}
 	}
+}
+
+func loginHandler(cfg config.Config, tls bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			User     string `json:"user"`
+			Password string `json:"password"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		if !checkCreds(cfg, body.User, body.Password) {
+			time.Sleep(400 * time.Millisecond) // лёгкая защита от перебора
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "неверный логин или пароль"})
+			return
+		}
+		setSessionCookie(c, createSession(), tls)
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+}
+
+func logoutHandler(c *gin.Context) {
+	if tok, err := c.Cookie(sessionCookie); err == nil {
+		dropSession(tok)
+	}
+	http.SetCookie(c.Writer, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func subtleEqual(a, b string) bool {
@@ -1674,7 +1776,19 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	authorized := r.Group("/", bcryptBasicAuth(cfg.AuthUser, cfg.AuthPassHash))
+	// публичные маршруты: страница входа + логин/логаут
+	r.GET("/login", func(c *gin.Context) {
+		if validSession(c) {
+			c.Redirect(http.StatusFound, "/")
+			return
+		}
+		c.File("./static/login.html")
+	})
+	r.POST("/api/login", loginHandler(cfg, tlsEnabled))
+	r.POST("/api/logout", logoutHandler)
+
+	// защищённые маршруты (сессия-cookie или Basic Auth)
+	authorized := r.Group("/", sessionAuth(cfg))
 
 	authorized.StaticFS("/static", http.Dir("./static"))
 	authorized.GET("/", func(c *gin.Context) {
