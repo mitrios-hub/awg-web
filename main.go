@@ -82,7 +82,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "1.4"
+const AppVersion = "1.5"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -1278,6 +1278,58 @@ func addClient(cfg config.Config, name string) (ReissueResponse, error) {
 	}, nil
 }
 
+// renameClient меняет имя клиента (clientName в clientsTable) — по публичному
+// ключу пира, найденного в wg0.conf по IP. Если записи в clientsTable нет
+// (orphan-пир), она создаётся минимальной, как это делает само приложение
+// Amnezia при создании клиента.
+func renameClient(cfg config.Config, ip, name string) error {
+	name = strings.TrimSpace(name)
+	if !clientNameRe.MatchString(name) {
+		return fmt.Errorf("недопустимое имя клиента (буквы, цифры, пробел, . _ - [ ] ( ), до 128 символов)")
+	}
+	confText, err := dockerExec(cfg.Container, "cat", cfg.WgConfPath)
+	if err != nil {
+		return fmt.Errorf("не удалось прочитать %s: %w (%s)", cfg.WgConfPath, err, confText)
+	}
+	peer, ok := findPeerByIP(confText, ip)
+	if !ok {
+		return fmt.Errorf("пир с IP %s не найден в %s", ip, cfg.WgConfPath)
+	}
+
+	raw, err := dockerExec(cfg.Container, "cat", cfg.ClientsTablePath)
+	if err != nil {
+		return fmt.Errorf("не удалось прочитать clientsTable: %w (%s)", err, raw)
+	}
+	var entries []ClientEntry
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return fmt.Errorf("не удалось разобрать clientsTable: %w", err)
+	}
+	found := false
+	for i := range entries {
+		if entries[i].ClientID == peer.PublicKey {
+			entries[i].UserData.ClientName = name
+			found = true
+			break
+		}
+	}
+	if !found {
+		var e ClientEntry
+		e.ClientID = peer.PublicKey
+		e.UserData.ClientName = name
+		e.UserData.CreationDate = time.Now().Format("Mon Jan _2 15:04:05 2006")
+		entries = append(entries, e)
+	}
+
+	if err := dockerBackup(cfg, cfg.ClientsTablePath); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(entries, "", "    ")
+	if err != nil {
+		return fmt.Errorf("не удалось сериализовать clientsTable: %w", err)
+	}
+	return dockerWriteFile(cfg.Container, cfg.ClientsTablePath, string(data))
+}
+
 // removePeerByIP убирает из текста wg0.conf блок [Peer], чей AllowedIPs
 // совпадает с ip/32. Возвращает новый текст и признак, что блок был найден.
 func removePeerByIP(conf, ip string) (string, bool) {
@@ -1861,6 +1913,26 @@ func main() {
 				return
 			}
 			c.JSON(http.StatusOK, resp)
+		})
+
+		api.POST("/users/:ip/rename", func(c *gin.Context) {
+			ip := c.Param("ip")
+			if !ipOnlyRe.MatchString(ip) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "некорректный IP"})
+				return
+			}
+			var body struct {
+				Name string `json:"name"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "ожидается JSON {\"name\": \"...\"}"})
+				return
+			}
+			if err := renameClient(cfg, ip, body.Name); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"ok": true})
 		})
 
 		api.POST("/users/:ip/delete", func(c *gin.Context) {
