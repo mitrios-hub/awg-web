@@ -21,6 +21,7 @@
     unblock: '<svg class="icon" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="currentColor"/></svg>',
     reissue: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M4 10a6 6 0 0 1 10.2-4.3M16 10a6 6 0 0 1-10.2 4.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 3v3h-3M6 17v-3h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     delete: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M6 6l8 8M14 6l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    pencil: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M4 16h3l8.5-8.5a1.5 1.5 0 0 0 0-2.1l-.9-.9a1.5 1.5 0 0 0-2.1 0L4 13v3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M11.5 5.5l3 3" stroke="currentColor" stroke-width="1.6"/></svg>',
   };
 
   // humanizeBytes — компактный объём (Б/КБ/МБ/ГБ/ТБ), число всегда < 1000.
@@ -65,6 +66,11 @@
     addInput: document.getElementById("addInput"),
     addOk: document.getElementById("addOk"),
     addCancel: document.getElementById("addCancel"),
+    renameOverlay: document.getElementById("renameOverlay"),
+    renameSubtitle: document.getElementById("renameSubtitle"),
+    renameInput: document.getElementById("renameInput"),
+    renameOk: document.getElementById("renameOk"),
+    renameCancel: document.getElementById("renameCancel"),
     backupBtn: document.getElementById("backupBtn"),
     backupOverlay: document.getElementById("backupOverlay"),
     backupDownload: document.getElementById("backupDownload"),
@@ -166,7 +172,9 @@
     tr.dataset.ip = u.ip;
     tr.innerHTML =
       '<td class="col-num"></td>' +
-      "<td></td>" +
+      '<td class="name-cell"><span class="name-text"></span>' +
+      '<button class="name-edit" data-action="rename" title="Переименовать" aria-label="Переименовать">' +
+      ICONS.pencil + "</button></td>" +
       '<td class="ip-cell"></td>' +
       '<td class="endpoint-cell"></td>' +
       '<td class="traffic-cell"></td>' +
@@ -178,6 +186,8 @@
       tr,
       cNum: c[0], cName: c[1], cIp: c[2], cEndpoint: c[3],
       cTraffic: c[4], cHs: c[5], cStatus: c[6], cAction: c[7],
+      nameText: c[1].querySelector(".name-text"),
+      nameEdit: c[1].querySelector(".name-edit"),
     };
     entry.cIp.textContent = u.ip; // IP статичен (это ключ строки)
     updateRow(entry, u, true);
@@ -190,8 +200,10 @@
       e.vNum = u.num;
     }
     if (init || e.vName !== u.name) {
-      e.cName.textContent = u.name;
+      e.nameText.textContent = u.name;
       e.cName.className = u.name === "—" ? "name-cell name-cell--empty" : "name-cell";
+      e.nameEdit.dataset.ip = u.ip;
+      e.nameEdit.dataset.name = u.name;
       e.vName = u.name;
     }
     if (init || e.vEndpoint !== u.endpoint) {
@@ -305,6 +317,8 @@
           "Старый конфиг/QR (если он у клиента ещё остался) сразу перестанет работать — потребуется установить новый.",
         () => performReissue(ip)
       );
+    } else if (action === "rename") {
+      openRename(ip, name);
     } else if (action === "delete") {
       openConfirm(
         "Удалить клиента",
@@ -379,6 +393,26 @@
       loadUsers();
     } catch (e) {
       showToast("Не удалось добавить клиента: " + e.message, true);
+    }
+  }
+
+  async function performRename(ip, name) {
+    try {
+      const res = await fetch("/api/users/" + encodeURIComponent(ip) + "/rename", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name }),
+      });
+      if (res.status === 401) { location.href = "/login"; return; }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || ("HTTP " + res.status));
+      }
+      showToast("Клиент переименован: " + name, false);
+      loadUsers();
+    } catch (e) {
+      showToast("Не удалось переименовать: " + e.message, true);
     }
   }
 
@@ -459,6 +493,7 @@
       closeReissue();
       closeAdd();
       closeBackup();
+      closeRename();
     }
   });
 
@@ -480,6 +515,39 @@
     closeAdd();
     performAddClient(name);
   }
+  // ---- модалка переименования ----
+  let renameIP = null;
+  function openRename(ip, name) {
+    renameIP = ip;
+    els.renameSubtitle.textContent = "IP: " + ip;
+    els.renameInput.value = name === "—" ? "" : name;
+    els.renameOverlay.classList.add("is-open");
+    setTimeout(() => { els.renameInput.focus(); els.renameInput.select(); }, 0);
+  }
+  function closeRename() {
+    els.renameOverlay.classList.remove("is-open");
+    renameIP = null;
+  }
+  function submitRename() {
+    const name = els.renameInput.value.trim();
+    if (!name || !renameIP) {
+      els.renameInput.focus();
+      return;
+    }
+    const ip = renameIP;
+    closeRename();
+    performRename(ip, name);
+  }
+  els.renameCancel.addEventListener("click", closeRename);
+  els.renameOk.addEventListener("click", submitRename);
+  els.renameOverlay.addEventListener("click", (e) => {
+    if (e.target === els.renameOverlay) closeRename();
+  });
+  els.renameInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitRename();
+    else if (e.key === "Escape") closeRename();
+  });
+
   els.addBtn.addEventListener("click", openAdd);
   els.addCancel.addEventListener("click", closeAdd);
   els.addOk.addEventListener("click", submitAdd);
