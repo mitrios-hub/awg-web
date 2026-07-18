@@ -62,9 +62,15 @@
       <div class="stat-card__value" id="statBlocked">—</div>
       <div class="stat-card__label">заблокированы</div>
     </div>
-    <div class="stat-card stat-card--muted">
+    <div class="stat-card stat-card--muted stat-card--info" id="statNeverCard" tabindex="0" role="button" aria-describedby="statNeverTip">
       <div class="stat-card__value" id="statNever">—</div>
-      <div class="stat-card__label">никогда не подключались</div>
+      <div class="stat-card__label">
+        Не подключались
+        <span class="info-icon" aria-hidden="true">
+          <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.4"/><path d="M10 9.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="10" cy="6.4" r="1" fill="currentColor"/></svg>
+        </span>
+      </div>
+      <div class="stat-tooltip" id="statNeverTip" role="tooltip">Пользователи ещё не подключались после добавления, либо после перезагрузки сервиса</div>
     </div>
   </section>
 

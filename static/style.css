@@ -231,6 +231,46 @@ body {
 .stat-card--danger .stat-card__value { color: var(--red); }
 .stat-card--muted .stat-card__value { color: var(--text-dim); }
 
+/* плашка «Не подключались» с подсказкой */
+.stat-card--info { position: relative; cursor: help; }
+.stat-card--info .stat-card__label { display: inline-flex; align-items: center; gap: 5px; }
+.info-icon { display: inline-flex; color: var(--text-dim); }
+.info-icon svg { width: 14px; height: 14px; }
+.stat-card--info:hover .info-icon,
+.stat-card--info.is-open .info-icon { color: var(--teal); }
+.stat-tooltip {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 30;
+  width: min(280px, 88vw);
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity .14s ease, transform .14s ease;
+}
+.stat-card--info.is-open .stat-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+/* hover-подсказка только на устройствах с настоящим курсором (не залипает на тач) */
+@media (hover: hover) {
+  .stat-card--info:hover .stat-tooltip {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+}
+
 /* ===================== TOOLBAR ===================== */
 .toolbar {
   display: flex;

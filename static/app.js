@@ -666,6 +666,21 @@
     localStorage.setItem("awg-theme", next);
   });
 
+  // ---- подсказка на плашке "Не подключались" (тап на мобильном / клик-пин на десктопе) ----
+  const neverCard = document.getElementById("statNeverCard");
+  if (neverCard) {
+    const toggle = (e) => {
+      e.stopPropagation();
+      neverCard.classList.toggle("is-open");
+    };
+    neverCard.addEventListener("click", toggle);
+    neverCard.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") toggle(e);
+    });
+    // тап/клик вне плашки — закрыть подсказку
+    document.addEventListener("click", () => neverCard.classList.remove("is-open"));
+  }
+
   // ---- выход ----
   els.logoutBtn.addEventListener("click", async () => {
     try {
