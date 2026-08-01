@@ -70,6 +70,7 @@ type ClientEntry struct {
 type User struct {
 	Num            int    `json:"num"`
 	IP             string `json:"ip"`
+	ClientID       string `json:"clientId"`
 	Name           string `json:"name"`
 	Endpoint       string `json:"endpoint"`
 	Handshake      string `json:"handshake"`
@@ -82,7 +83,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "1.6"
+const AppVersion = "1.7"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -649,6 +650,11 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 		ip := ""
 		if haveLive {
 			ip = strings.SplitN(strings.SplitN(peer.AllowedIPs, ",", 2)[0], "/", 2)[0]
+			if ip == "(none)" {
+				// wg show dump пишет буквально "(none)", если у пира вообще
+				// не задан AllowedIPs (битая/ручная запись) — это не IP.
+				ip = ""
+			}
 		}
 		if ip == "" {
 			// запасной путь: вдруг это старая запись, где allowedIps есть
@@ -660,10 +666,9 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 				}
 			}
 		}
-		if ip == "" {
-			// негде взять IP вообще — показать нечего, пропускаем
-			continue
-		}
+		// Если IP взять неоткуда — всё равно показываем клиента (ключом
+		// служит clientId/pubkey), чтобы такую битую запись можно было
+		// увидеть и удалить из панели.
 
 		name := nameByKey[key]
 		if name == "" {
@@ -709,6 +714,7 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 		users = append(users, User{
 			Num:            num,
 			IP:             ip,
+			ClientID:       key,
 			Name:           name,
 			Endpoint:       endpoint,
 			Handshake:      handshake,
@@ -749,6 +755,10 @@ func ipLess(a, b string) bool {
 // ===================== ДЕЙСТВИЯ (блокировка/разблокировка) =====================
 
 var ipOnlyRe = regexp.MustCompile(`^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$`)
+
+// pubkeyRe — грубая проверка формата WireGuard-ключа (base64), используется
+// как clientId для операций над клиентами без IP (см. deleteClientByKey).
+var pubkeyRe = regexp.MustCompile(`^[A-Za-z0-9+/=]{20,100}$`)
 
 func blockIP(cfg config.Config, ip string) error {
 	out, err := dockerExec(cfg.Container, "iptables", "-t", "raw", "-I", "PREROUTING", "1", "-s", ip, "-j", "DROP")
@@ -1359,6 +1369,31 @@ func removePeerByIP(conf, ip string) (string, bool) {
 	return b.String(), removed
 }
 
+// removePeerByPubkey — как removePeerByIP, но матчит по PublicKey. Нужен для
+// клиентов без корректного AllowedIPs (например, wg show дампит "(none)"),
+// у которых искать/удалять по IP невозможно.
+func removePeerByPubkey(conf, pub string) (string, bool) {
+	parts := strings.Split(conf, "[Peer]")
+	var b strings.Builder
+	b.WriteString(parts[0])
+	removed := false
+	for _, block := range parts[1:] {
+		match := false
+		for _, line := range strings.Split(block, "\n") {
+			if m := kvLineRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil && m[1] == "PublicKey" && m[2] == pub {
+				match = true
+			}
+		}
+		if match {
+			removed = true
+			continue
+		}
+		b.WriteString("[Peer]")
+		b.WriteString(block)
+	}
+	return b.String(), removed
+}
+
 // removeClientFromTable убирает запись клиента из clientsTable по публичному
 // ключу (clientId) с запасным сопоставлением по allowedIps.
 func removeClientFromTable(cfg config.Config, pub, ip string) error {
@@ -1418,6 +1453,33 @@ func deleteClient(cfg config.Config, ip string) error {
 		log.Printf("удаление %s: пир убран из wg0.conf, но запись в clientsTable — нет: %v", ip, err)
 	}
 	_ = unblockIP(cfg, ip) // на случай, если клиент был заблокирован — не оставляем висячее правило
+	return nil
+}
+
+// deleteClientByKey удаляет клиента по публичному ключу (clientId), когда
+// у него нет корректного IP и найти/вырезать [Peer] по AllowedIPs (как в
+// deleteClient) невозможно. Если пир вообще отсутствует в wg0.conf (битая
+// запись только в clientsTable), правим только clientsTable.
+func deleteClientByKey(cfg config.Config, pub string) error {
+	confText, err := dockerExec(cfg.Container, "cat", cfg.WgConfPath)
+	if err != nil {
+		return fmt.Errorf("не удалось прочитать %s: %w (%s)", cfg.WgConfPath, err, confText)
+	}
+	newConf, removed := removePeerByPubkey(confText, pub)
+	if removed {
+		if err := dockerBackup(cfg, cfg.WgConfPath); err != nil {
+			return err
+		}
+		if err := dockerWriteFile(cfg.Container, cfg.WgConfPath, newConf); err != nil {
+			return fmt.Errorf("не удалось записать %s: %w", cfg.WgConfPath, err)
+		}
+		if err := wgSyncConf(cfg); err != nil {
+			return err
+		}
+	}
+	if err := removeClientFromTable(cfg, pub, ""); err != nil {
+		log.Printf("удаление клиента по ключу %s: запись в clientsTable — нет: %v", pub, err)
+	}
 	return nil
 }
 
@@ -1937,6 +1999,21 @@ func main() {
 
 		api.POST("/users/:ip/delete", func(c *gin.Context) {
 			ip := c.Param("ip")
+			// clientId — запасной путь удаления для клиентов без корректного
+			// IP (например, wg show отдаёт "(none)" вместо AllowedIPs).
+			clientID := c.Query("clientId")
+			if clientID != "" {
+				if !pubkeyRe.MatchString(clientID) {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "некорректный clientId"})
+					return
+				}
+				if err := deleteClientByKey(cfg, clientID); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"ok": true})
+				return
+			}
 			if !ipOnlyRe.MatchString(ip) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "некорректный IP"})
 				return

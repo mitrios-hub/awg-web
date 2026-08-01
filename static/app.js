@@ -154,7 +154,15 @@
   }
 
   function actionCellHtml(u) {
-    const dataAttr = ' data-ip="' + u.ip + '" data-name="' + escapeHtml(u.name) + '"';
+    const dataAttr = ' data-ip="' + u.ip + '" data-client-id="' + escapeHtml(u.clientId || "") +
+      '" data-name="' + escapeHtml(u.name) + '"';
+    const del = '<button class="btn btn--row btn--icon btn--row-delete" data-action="delete"' + dataAttr +
+      ' title="Удалить" aria-label="Удалить">' + ICONS.delete + "</button>";
+    // без IP блок/разблок/перевыпуск невозможны (нет с чем сопоставить пира) —
+    // для таких битых записей доступно только удаление
+    if (!u.ip) {
+      return '<div class="row-actions">' + del + "</div>";
+    }
     const toggle = u.blocked
       ? '<button class="btn btn--row btn--icon btn--row-unblock" data-action="unblock"' + dataAttr +
         ' title="Включить" aria-label="Включить">' + ICONS.unblock + "</button>"
@@ -162,13 +170,12 @@
         ' title="Отключить" aria-label="Отключить">' + ICONS.block + "</button>";
     const reissue = '<button class="btn btn--row btn--icon btn--row-reissue" data-action="reissue"' + dataAttr +
       ' title="Перевыпустить" aria-label="Перевыпустить">' + ICONS.reissue + "</button>";
-    const del = '<button class="btn btn--row btn--icon btn--row-delete" data-action="delete"' + dataAttr +
-      ' title="Удалить" aria-label="Удалить">' + ICONS.delete + "</button>";
     return '<div class="row-actions">' + toggle + reissue + del + "</div>";
   }
 
   function buildRow(u) {
     const tr = document.createElement("tr");
+    tr.dataset.clientId = u.clientId || "";
     tr.dataset.ip = u.ip;
     tr.innerHTML =
       '<td class="col-num"></td>' +
@@ -189,7 +196,8 @@
       nameText: c[1].querySelector(".name-text"),
       nameEdit: c[1].querySelector(".name-edit"),
     };
-    entry.cIp.textContent = u.ip; // IP статичен (это ключ строки)
+    entry.cIp.textContent = u.ip || "—"; // IP статичен (это ключ строки)
+    if (!u.ip) entry.nameEdit.style.display = "none"; // переименование тоже завязано на IP
     updateRow(entry, u, true);
     return entry;
   }
@@ -273,11 +281,12 @@
     const desired = new Set();
     let prev = null;
     for (const u of filtered) {
-      desired.add(u.ip);
-      let entry = rowEls.get(u.ip);
+      const key = u.clientId || u.ip;
+      desired.add(key);
+      let entry = rowEls.get(key);
       if (!entry) {
         entry = buildRow(u);
-        rowEls.set(u.ip, entry);
+        rowEls.set(key, entry);
       } else {
         updateRow(entry, u, false);
       }
@@ -285,10 +294,10 @@
       if (ref !== entry.tr) tbody.insertBefore(entry.tr, ref);
       prev = entry.tr;
     }
-    for (const [ip, entry] of rowEls) {
-      if (!desired.has(ip)) {
+    for (const [key, entry] of rowEls) {
+      if (!desired.has(key)) {
         entry.tr.remove();
-        rowEls.delete(ip);
+        rowEls.delete(key);
       }
     }
   }
@@ -296,12 +305,13 @@
   function onActionClick(btn) {
     const action = btn.dataset.action;
     const ip = btn.dataset.ip;
+    const clientId = btn.dataset.clientId;
     const name = btn.dataset.name;
 
     if (action === "block") {
       openConfirm(
         "Отключить пользователя",
-        "Заблокировать «" + name + "» (" + ip + ")? Трафик с этого IP будет дропаться на уровне iptables.",
+        "Заблокировать «" + name + "» (" + ip + ")?",
         () => performAction("block", ip)
       );
     } else if (action === "unblock") {
@@ -320,11 +330,12 @@
     } else if (action === "rename") {
       openRename(ip, name);
     } else if (action === "delete") {
+      const label = ip ? "«" + name + "» (" + ip + ")" : "«" + name + "» (без IP)";
       openConfirm(
         "Удалить клиента",
-        "Удалить «" + name + "» (" + ip + ")? Пир будет убран из wg0.conf и clientsTable, IP освободится. " +
-          "Действие необратимо — если клиент нужен снова, придётся создать заново.",
-        () => performDelete(ip)
+        "Удалить " + label + "? Пир будет убран из wg0.conf и clientsTable" + (ip ? ", IP освободится." : ".") +
+          " Действие необратимо — если клиент нужен снова, придётся создать заново.",
+        () => performDelete(ip, clientId)
       );
     }
   }
@@ -416,9 +427,13 @@
     }
   }
 
-  async function performDelete(ip) {
+  async function performDelete(ip, clientId) {
     try {
-      const res = await fetch("/api/users/" + encodeURIComponent(ip) + "/delete", {
+      // без IP удаляем по clientId (публичному ключу) — путь всё равно
+      // требует непустой сегмент, поэтому подставляем плейсхолдер "-"
+      const path = ip ? encodeURIComponent(ip) : "-";
+      const qs = ip ? "" : ("?clientId=" + encodeURIComponent(clientId || ""));
+      const res = await fetch("/api/users/" + path + "/delete" + qs, {
         method: "POST",
         credentials: "same-origin",
       });
