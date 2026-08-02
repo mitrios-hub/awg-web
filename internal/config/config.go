@@ -47,6 +47,16 @@ type Config struct {
 	// трафик по клиентам (переживает перезапуск контейнера и awg-web).
 	// Пустая строка отключает персистентность (трафик только в памяти).
 	TrafficStatePath string `json:"traffic_state_path"`
+
+	// BlockedStatePath — файл на диске хоста со списком заблокированных IP.
+	// Правила iptables (raw/PREROUTING DROP) живут в сетевом namespace
+	// контейнера и стираются при ЛЮБОМ его перезапуске — не только нашей
+	// кнопкой, но и сторонними причинами (внешний бэкап-скрипт с docker
+	// stop/start, рестарт docker-демона, перезагрузка хоста). Список в этом
+	// файле переживает такой перезапуск, и правила переустанавливаются
+	// автоматически при следующем опросе. Пустая строка отключает
+	// персистентность (блокировка только в памяти iptables, как раньше).
+	BlockedStatePath string `json:"blocked_state_path"`
 }
 
 func DefaultConfig() Config {
@@ -59,6 +69,7 @@ func DefaultConfig() Config {
 		ClientDNS:        "1.1.1.1, 1.0.0.1",
 		AuthUser:         "admin",
 		TrafficStatePath: "./awg-web-traffic.json",
+		BlockedStatePath: "./awg-web-blocked.json",
 	}
 }
 

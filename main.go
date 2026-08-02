@@ -83,7 +83,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "1.7"
+const AppVersion = "1.8"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -593,6 +593,19 @@ func fetchBlockedSet(cfg config.Config) (map[string]bool, error) {
 			blocked[m[1]] = true
 		}
 	}
+
+	// самолечение: если для персистентно заблокированного IP правила не
+	// оказалось (контейнер перезапустили в обход панели) — переустанавливаем.
+	blockedMu.Lock()
+	for ip := range blockedState {
+		if !blocked[ip] {
+			if _, err := dockerExec(cfg.Container, "iptables", "-t", "raw", "-I", "PREROUTING", "1", "-s", ip, "-j", "DROP"); err == nil {
+				blocked[ip] = true
+			}
+		}
+	}
+	blockedMu.Unlock()
+
 	return blocked, nil
 }
 
@@ -760,11 +773,61 @@ var ipOnlyRe = regexp.MustCompile(`^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$`)
 // как clientId для операций над клиентами без IP (см. deleteClientByKey).
 var pubkeyRe = regexp.MustCompile(`^[A-Za-z0-9+/=]{20,100}$`)
 
+// ---- персистентный список заблокированных IP ----
+//
+// Правило iptables (raw/PREROUTING DROP) живёт в сетевом namespace контейнера
+// и стирается при ЛЮБОМ его перезапуске — не только нажатием кнопки в панели,
+// но и любым внешним docker stop/start (например, сторонний бэкап-скрипт на
+// хосте, рестарт docker-демона, перезагрузка сервера). Без отдельного учёта
+// это означало бы, что после такого перезапуска все клиенты молча
+// разблокируются. Поэтому список факта блокировки храним отдельно на диске
+// и на каждый опрос (fetchBlockedSet) сверяем с живыми iptables-правилами,
+// недостающие — переустанавливаем.
+var (
+	blockedMu        sync.Mutex
+	blockedState     = map[string]bool{} // ip -> заблокирован (персистентно)
+	blockedStatePath string
+)
+
+func loadBlockedState(path string) {
+	blockedStatePath = path
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var st map[string]bool
+	if json.Unmarshal(data, &st) == nil && st != nil {
+		blockedState = st
+	}
+}
+
+// saveBlockedStateLocked пишет список на диск атомарно. Вызывать под blockedMu.
+func saveBlockedStateLocked() {
+	if blockedStatePath == "" {
+		return
+	}
+	data, err := json.MarshalIndent(blockedState, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := blockedStatePath + ".tmp"
+	if os.WriteFile(tmp, data, 0600) == nil {
+		_ = os.Rename(tmp, blockedStatePath)
+	}
+}
+
 func blockIP(cfg config.Config, ip string) error {
 	out, err := dockerExec(cfg.Container, "iptables", "-t", "raw", "-I", "PREROUTING", "1", "-s", ip, "-j", "DROP")
 	if err != nil {
 		return fmt.Errorf("iptables: %w (%s)", err, out)
 	}
+	blockedMu.Lock()
+	blockedState[ip] = true
+	saveBlockedStateLocked()
+	blockedMu.Unlock()
 	return nil
 }
 
@@ -776,6 +839,10 @@ func unblockIP(cfg config.Config, ip string) error {
 			break
 		}
 	}
+	blockedMu.Lock()
+	delete(blockedState, ip)
+	saveBlockedStateLocked()
+	blockedMu.Unlock()
 	return nil
 }
 
@@ -1885,6 +1952,9 @@ func main() {
 	// персистентный учёт трафика: загрузка накопителя с диска + фоновый опрос
 	loadTrafficState(cfg.TrafficStatePath)
 	go trafficLoop(cfg)
+
+	// персистентный список заблокированных — переустановится в fetchBlockedSet
+	loadBlockedState(cfg.BlockedStatePath)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
