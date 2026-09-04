@@ -1189,7 +1189,7 @@ func dockerBackup(cfg config.Config, path string) error {
 }
 
 // sharedPSK достаёт общий PresharedKey из первого [Peer] в wg0.conf.
-func sharedPSK(conf string) (string, error) {
+func sharedPSK(cfg config.Config, conf string) (string, error) {
 	for _, block := range strings.Split(conf, "[Peer]")[1:] {
 		for _, line := range strings.Split(block, "\n") {
 			if m := kvLineRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil && m[1] == "PresharedKey" {
@@ -1197,7 +1197,20 @@ func sharedPSK(conf string) (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("в wg0.conf не найден PresharedKey ни в одном [Peer] — не с чего взять общий PSK")
+	// Ни одного [Peer] ещё нет (самый первый клиент на свежепоставленном
+	// сервере) — берём общий PSK из файла, который сгенерировал сам установщик
+	// протокола (configure_container.sh) рядом с awg0.conf.
+	keyPath := path.Join(path.Dir(cfg.WgConfPath), "wireguard_psk.key")
+	out, err := dockerExec(cfg.Container, "cat", keyPath)
+	if err != nil {
+		return "", fmt.Errorf("в %s нет ни одного [Peer], и не удалось прочитать %s: %w (%s)",
+			cfg.WgConfPath, keyPath, err, out)
+	}
+	psk := strings.TrimSpace(out)
+	if psk == "" {
+		return "", fmt.Errorf("в %s нет ни одного [Peer], а %s пуст — не с чего взять общий PSK", cfg.WgConfPath, keyPath)
+	}
+	return psk, nil
 }
 
 // subnetPrefix возвращает префикс подсети ("10.8.1.") из строки Address секции
@@ -1301,7 +1314,7 @@ func addClient(cfg config.Config, name string) (ReissueResponse, error) {
 	}
 	ifaceParams := parseWgConfInterface(confText)
 
-	psk, err := sharedPSK(confText)
+	psk, err := sharedPSK(cfg, confText)
 	if err != nil {
 		return ReissueResponse{}, err
 	}
@@ -1653,7 +1666,7 @@ func buildBackup(cfg config.Config) (BackupBundle, error) {
 		return BackupBundle{}, fmt.Errorf("не удалось прочитать %s: %w (%s)", cfg.WgConfPath, err, conf)
 	}
 	serverPubOut, _ := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface, "public-key")
-	psk, _ := sharedPSK(conf)
+	psk, _ := sharedPSK(cfg, conf)
 
 	// имена/даты из clientsTable по публичному ключу
 	type meta struct{ name, date string }
@@ -1750,7 +1763,7 @@ func restoreBackup(cfg config.Config, b BackupBundle, full bool) (int, error) {
 		ifaceText = b.Server.InterfaceText // принимаем идентичность из бэкапа
 	} else {
 		ifaceText = interfaceSection(curConf) // сохраняем текущую идентичность
-		psk, err := sharedPSK(curConf)
+		psk, err := sharedPSK(cfg, curConf)
 		if err != nil {
 			return 0, err
 		}
