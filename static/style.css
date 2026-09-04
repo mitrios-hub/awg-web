@@ -578,6 +578,17 @@ table.peers {
   .table-wrap { overflow-x: auto; }
 }
 
+/* совсем узкий экран (телефон): в шапке 5 кнопок + время обновления не
+   помещаются с текстовыми подписями — прячем подписи, оставляем иконки
+   (как уже было у темы/смены пароля), кнопки становятся компактными
+   квадратами и укладываются в один ряд без переноса текста внутри кнопки */
+@media (max-width: 520px) {
+  .topbar__right { gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .topbar__right .btn { padding: 8px; gap: 0; }
+  .btn__label { display: none; }
+  .fetched-at { display: none; }
+}
+
 /* фокус для клавиатурной навигации */
 a:focus-visible, button:focus-visible, input:focus-visible {
   outline: 2px solid var(--teal);
