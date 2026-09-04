@@ -71,6 +71,13 @@
     renameInput: document.getElementById("renameInput"),
     renameOk: document.getElementById("renameOk"),
     renameCancel: document.getElementById("renameCancel"),
+    passwordBtn: document.getElementById("passwordBtn"),
+    passwordOverlay: document.getElementById("passwordOverlay"),
+    passwordCurrentInput: document.getElementById("passwordCurrentInput"),
+    passwordNewInput: document.getElementById("passwordNewInput"),
+    passwordConfirmInput: document.getElementById("passwordConfirmInput"),
+    passwordOk: document.getElementById("passwordOk"),
+    passwordCancel: document.getElementById("passwordCancel"),
     backupBtn: document.getElementById("backupBtn"),
     backupOverlay: document.getElementById("backupOverlay"),
     backupDownload: document.getElementById("backupDownload"),
@@ -427,6 +434,24 @@
     }
   }
 
+  async function performChangePassword(current, next) {
+    try {
+      const res = await fetch("/api/change-password", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: current, newPassword: next }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || ("HTTP " + res.status));
+      }
+      showToast("Пароль изменён", false);
+    } catch (e) {
+      showToast("Не удалось сменить пароль: " + e.message, true);
+    }
+  }
+
   async function performDelete(ip, clientId) {
     try {
       // без IP удаляем по clientId (публичному ключу) — путь всё равно
@@ -561,6 +586,51 @@
   els.renameInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") submitRename();
     else if (e.key === "Escape") closeRename();
+  });
+
+  // ---- модалка смены пароля ----
+  function openPassword() {
+    els.passwordCurrentInput.value = "";
+    els.passwordNewInput.value = "";
+    els.passwordConfirmInput.value = "";
+    els.passwordOverlay.classList.add("is-open");
+    setTimeout(() => els.passwordCurrentInput.focus(), 0);
+  }
+  function closePassword() {
+    els.passwordOverlay.classList.remove("is-open");
+  }
+  function submitPassword() {
+    const current = els.passwordCurrentInput.value;
+    const next = els.passwordNewInput.value;
+    const confirm = els.passwordConfirmInput.value;
+    if (!current) {
+      els.passwordCurrentInput.focus();
+      return;
+    }
+    if (next.length < 8) {
+      showToast("Новый пароль слишком короткий (минимум 8 символов)", true);
+      els.passwordNewInput.focus();
+      return;
+    }
+    if (next !== confirm) {
+      showToast("Новый пароль и подтверждение не совпадают", true);
+      els.passwordConfirmInput.focus();
+      return;
+    }
+    closePassword();
+    performChangePassword(current, next);
+  }
+  els.passwordBtn.addEventListener("click", openPassword);
+  els.passwordCancel.addEventListener("click", closePassword);
+  els.passwordOk.addEventListener("click", submitPassword);
+  els.passwordOverlay.addEventListener("click", (e) => {
+    if (e.target === els.passwordOverlay) closePassword();
+  });
+  [els.passwordCurrentInput, els.passwordNewInput, els.passwordConfirmInput].forEach((inp) => {
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submitPassword();
+      else if (e.key === "Escape") closePassword();
+    });
   });
 
   els.addBtn.addEventListener("click", openAdd);

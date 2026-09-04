@@ -1868,10 +1868,30 @@ func dropSession(tok string) {
 	sessMu.Unlock()
 }
 
-// checkCreds сверяет логин/пароль с конфигом (bcrypt).
-func checkCreds(cfg config.Config, user, pass string) bool {
-	return subtleEqual(user, cfg.AuthUser) &&
-		bcrypt.CompareHashAndPassword([]byte(cfg.AuthPassHash), []byte(pass)) == nil
+// Текущие логин/хэш пароля — отдельно от cfg. sessionAuth/loginHandler
+// получают cfg СНИМКОМ на момент регистрации маршрутов (см. main()), поэтому
+// смена пароля через API правкой самого cfg до них бы не дошла без рестарта.
+// Держим их в общем состоянии под мьютексом (тот же приём, что и у
+// blockedState/trafficState) — changePasswordHandler меняет здесь, все
+// последующие проверки видят новое значение сразу же.
+var (
+	authMu       sync.Mutex
+	authUser     string
+	authPassHash string
+)
+
+func setAuthCreds(user, hash string) {
+	authMu.Lock()
+	authUser, authPassHash = user, hash
+	authMu.Unlock()
+}
+
+// checkCreds сверяет логин/пароль с текущими учётными данными (bcrypt).
+func checkCreds(user, pass string) bool {
+	authMu.Lock()
+	u, h := authUser, authPassHash
+	authMu.Unlock()
+	return subtleEqual(user, u) && bcrypt.CompareHashAndPassword([]byte(h), []byte(pass)) == nil
 }
 
 func setSessionCookie(c *gin.Context, tok string, tls bool) {
@@ -1889,13 +1909,13 @@ func setSessionCookie(c *gin.Context, tok string, tls bool) {
 // sessionAuth пускает по валидной сессии либо по Basic Auth (для API/curl).
 // Иначе для /api/* — 401 JSON без WWW-Authenticate (чтобы браузер не показывал
 // нативный диалог), для остального (навигация) — редирект на /login.
-func sessionAuth(cfg config.Config) gin.HandlerFunc {
+func sessionAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if validSession(c) {
 			c.Next()
 			return
 		}
-		if u, p, ok := c.Request.BasicAuth(); ok && checkCreds(cfg, u, p) {
+		if u, p, ok := c.Request.BasicAuth(); ok && checkCreds(u, p) {
 			c.Next()
 			return
 		}
@@ -1908,14 +1928,14 @@ func sessionAuth(cfg config.Config) gin.HandlerFunc {
 	}
 }
 
-func loginHandler(cfg config.Config, tls bool) gin.HandlerFunc {
+func loginHandler(tls bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
 			User     string `json:"user"`
 			Password string `json:"password"`
 		}
 		_ = c.ShouldBindJSON(&body)
-		if !checkCreds(cfg, body.User, body.Password) {
+		if !checkCreds(body.User, body.Password) {
 			time.Sleep(400 * time.Millisecond) // лёгкая защита от перебора
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "неверный логин или пароль"})
 			return
@@ -1982,6 +2002,8 @@ func main() {
 	// персистентный список заблокированных — переустановится в fetchBlockedSet
 	loadBlockedState(cfg.BlockedStatePath)
 
+	setAuthCreds(cfg.AuthUser, cfg.AuthPassHash)
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -1994,11 +2016,11 @@ func main() {
 		}
 		c.File("./static/login.html")
 	})
-	r.POST("/api/login", loginHandler(cfg, tlsEnabled))
+	r.POST("/api/login", loginHandler(tlsEnabled))
 	r.POST("/api/logout", logoutHandler)
 
 	// защищённые маршруты (сессия-cookie или Basic Auth)
-	authorized := r.Group("/", sessionAuth(cfg))
+	authorized := r.Group("/", sessionAuth())
 
 	authorized.StaticFS("/static", http.Dir("./static"))
 	authorized.GET("/", func(c *gin.Context) {
@@ -2071,6 +2093,39 @@ func main() {
 				return
 			}
 			c.JSON(http.StatusOK, resp)
+		})
+
+		api.POST("/change-password", func(c *gin.Context) {
+			var body struct {
+				CurrentPassword string `json:"currentPassword"`
+				NewPassword     string `json:"newPassword"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "ожидается JSON {\"currentPassword\":\"...\",\"newPassword\":\"...\"}"})
+				return
+			}
+			if !checkCreds(cfg.AuthUser, body.CurrentPassword) {
+				time.Sleep(400 * time.Millisecond) // та же лёгкая защита от перебора, что и в loginHandler
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "текущий пароль неверен"})
+				return
+			}
+			if len(body.NewPassword) < 8 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "новый пароль слишком короткий (минимум 8 символов)"})
+				return
+			}
+			hash, err := bcrypt.GenerateFromPassword([]byte(body.NewPassword), bcrypt.DefaultCost)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "не удалось захэшировать пароль: " + err.Error()})
+				return
+			}
+			newCfg := cfg
+			newCfg.AuthPassHash = string(hash)
+			if err := config.SaveConfig(*configPath, newCfg); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "не удалось сохранить новый пароль в " + *configPath + ": " + err.Error()})
+				return
+			}
+			setAuthCreds(cfg.AuthUser, string(hash))
+			c.JSON(http.StatusOK, gin.H{"ok": true})
 		})
 
 		api.POST("/users/:ip/rename", func(c *gin.Context) {
