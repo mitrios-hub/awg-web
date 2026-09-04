@@ -1996,6 +1996,16 @@ func main() {
 	// защищённые маршруты (сессия-cookie или Basic Auth)
 	authorized := r.Group("/", sessionAuth())
 
+	// no-cache — не отключает кэш совсем (браузер всё равно сверяется по
+	// If-Modified-Since/ETag и получает 304, если файл не менялся), но не
+	// даёт мобильным браузерам молча отдавать старые index.html/app.js/
+	// style.css неделями без единого запроса на сервер после очередного
+	// обновления панели.
+	authorized.Use(func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+		c.Next()
+	})
+
 	authorized.StaticFS("/static", http.Dir("./static"))
 	authorized.GET("/", func(c *gin.Context) {
 		c.File("./static/index.html")
