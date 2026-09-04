@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"os"
@@ -1940,9 +1941,21 @@ func subtleEqual(a, b string) bool {
 
 // ===================== HTTP =====================
 
+// indexTmpl — index.html как шаблон: подставляет AppVersion в query-параметр
+// ссылок на /static/style.css и /static/app.js (см. static/index.html), чтобы
+// при каждом релизе URL статики менялся и браузер гарантированно тянул
+// свежий файл вместо кэша — не полагаясь только на заголовки Cache-Control.
+var indexTmpl *template.Template
+
 func main() {
 	configPath := flag.String("config", "./config.json", "путь к JSON-файлу конфигурации")
 	flag.Parse()
+
+	var errTmpl error
+	indexTmpl, errTmpl = template.ParseFiles("./static/index.html")
+	if errTmpl != nil {
+		log.Fatalf("не удалось разобрать ./static/index.html как шаблон: %v", errTmpl)
+	}
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
@@ -2008,7 +2021,10 @@ func main() {
 
 	authorized.StaticFS("/static", http.Dir("./static"))
 	authorized.GET("/", func(c *gin.Context) {
-		c.File("./static/index.html")
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		if err := indexTmpl.Execute(c.Writer, gin.H{"Version": AppVersion}); err != nil {
+			c.String(http.StatusInternalServerError, "не удалось отрендерить index.html: %v", err)
+		}
 	})
 
 	api := authorized.Group("/api")
