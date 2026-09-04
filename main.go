@@ -83,7 +83,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "1.8"
+const AppVersion = "1.9"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -115,7 +115,12 @@ var rawDropRe = regexp.MustCompile(`-s\s+(\d+\.\d+\.\d+\.\d+)(/32)?.*-j\s+DROP`)
 
 type wgInterfaceParams struct {
 	Jc, Jmin, Jmax, S1, S2 string
-	H1, H2, H3, H4         string
+	// S3, S4 — джанк-параметры cookie-reply/transport пакетов, появились в
+	// текущем (не-legacy) поколении протокола AmneziaWG поверх исходных
+	// Jc/Jmin/Jmax/S1/S2/H1-H4. На legacy-серверах их нет — поле останется
+	// пустым, и в клиентский конфиг они не попадут (см. buildClientConfig).
+	S3, S4         string
+	H1, H2, H3, H4 string
 }
 
 type confPeer struct {
@@ -157,6 +162,10 @@ func parseWgConfInterface(conf string) wgInterfaceParams {
 			p.S1 = m[2]
 		case "S2":
 			p.S2 = m[2]
+		case "S3":
+			p.S3 = m[2]
+		case "S4":
+			p.S4 = m[2]
 		case "H1":
 			p.H1 = m[2]
 		case "H2":
@@ -243,8 +252,12 @@ func buildClientConfig(priv, ip string, cfg config.Config, p wgInterfaceParams, 
 	fmt.Fprintf(&b, "Address = %s/32\n", ip)
 	fmt.Fprintf(&b, "DNS = %s\n", dns)
 	if p.Jc != "" {
-		fmt.Fprintf(&b, "Jc = %s\nJmin = %s\nJmax = %s\nS1 = %s\nS2 = %s\nH1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n",
-			p.Jc, p.Jmin, p.Jmax, p.S1, p.S2, p.H1, p.H2, p.H3, p.H4)
+		fmt.Fprintf(&b, "Jc = %s\nJmin = %s\nJmax = %s\nS1 = %s\nS2 = %s\n",
+			p.Jc, p.Jmin, p.Jmax, p.S1, p.S2)
+		if p.S3 != "" {
+			fmt.Fprintf(&b, "S3 = %s\nS4 = %s\n", p.S3, p.S4)
+		}
+		fmt.Fprintf(&b, "H1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n", p.H1, p.H2, p.H3, p.H4)
 		// AmneziaWG новых версий добавляет в клиентский конфиг ещё пустые поля
 		// I1-I5 (в нашем серверном wg0.conf их нет). Пишем их для совпадения с
 		// конфигом, который отдаёт штатное приложение Amnezia.
