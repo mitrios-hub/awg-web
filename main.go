@@ -84,7 +84,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "2.0"
+const AppVersion = "2.1"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -114,15 +114,53 @@ var rawDropRe = regexp.MustCompile(`-s\s+(\d+\.\d+\.\d+\.\d+)(/32)?.*-j\s+DROP`)
 // тот же IP, то же имя, тот же PSK, но с чистого листа. Старый (утерянный)
 // ключ при этом инвалидируется.
 
-type wgInterfaceParams struct {
-	Jc, Jmin, Jmax, S1, S2 string
-	// S3, S4 — джанк-параметры cookie-reply/transport пакетов, появились в
-	// текущем (не-legacy) поколении протокола AmneziaWG поверх исходных
-	// Jc/Jmin/Jmax/S1/S2/H1-H4. На legacy-серверах их нет — поле останется
-	// пустым, и в клиентский конфиг они не попадут (см. buildClientConfig).
-	S3, S4         string
-	H1, H2, H3, H4 string
+// obfuscationKeys — параметры [Interface] серверного конфига, которые панель
+// один-в-один переносит в конфиг клиента. Порядок здесь = порядок строк в
+// выданном конфиге.
+//
+//   - Jc/Jmin/Jmax — количество и размер мусорных пакетов (строго говоря, могут
+//     отличаться у сторон, но штатное приложение выдаёт клиенту серверные);
+//   - S1-S4 (паддинг init/response/cookie/transport) и H1-H4 (свои номера типов
+//     сообщений) — обязаны совпадать, иначе handshake не проходит;
+//   - I1-I5 — CPS-пакеты AmneziaWG 3.1 (перед handshake отправляется до пяти
+//     UDP-пакетов, описанных тегами <b 0x..>/<r N>/<t>/<rc N>/<rd N>, чтобы
+//     трафик на старте выглядел как другой протокол);
+//   - HeaderProtectionKey (ChaCha20-шифрование открытых частей заголовка),
+//     ContentPaddingAddition (случайный паддинг транспортных пакетов),
+//     RandomTrailers, DisableCookies и рандомизированные тайминги
+//     (RekeyAfterTime/RekeyTimeout/RejectAfterTime/KeepaliveTimeout/
+//     MaxHandshakeAttempts) — тоже 3.1 и тоже должны совпадать у сторон.
+//
+// Ключей, которых в серверном конфиге нет, в клиентском тоже не будет — панель
+// ничего не выдумывает и одинаково работает с любым набором параметров.
+var obfuscationKeys = []string{
+	"Jc", "Jmin", "Jmax",
+	"S1", "S2", "S3", "S4",
+	"H1", "H2", "H3", "H4",
+	"I1", "I2", "I3", "I4", "I5",
+	"HeaderProtectionKey",
+	"ContentPaddingAddition",
+	"RekeyAfterTime", "RekeyTimeout", "RejectAfterTime",
+	"KeepaliveTimeout", "MaxHandshakeAttempts",
+	"RandomTrailers", "DisableCookies",
 }
+
+// clientMTU — MTU в выдаваемом клиентском конфиге. 3.1 добавляет к транспортным
+// пакетам случайный паддинг и трейлеры, поэтому Amnezia рекомендует 1280 вместо
+// прежних 1376 — иначе на части сетей пакеты начинают теряться.
+const clientMTU = 1280
+
+type wgInterfaceParams struct {
+	// values — значения ключей из obfuscationKeys ровно так, как они записаны
+	// в конфиге сервера (для I1-I5 важны внутренние пробелы — не трогаем).
+	values map[string]string
+}
+
+func (p wgInterfaceParams) get(key string) string { return p.values[key] }
+
+// hasObfuscation — есть ли у сервера обфускация вообще (Jc — самый первый
+// параметр, появившийся ещё в AmneziaWG 1.0; без него это голый WireGuard).
+func (p wgInterfaceParams) hasObfuscation() bool { return p.values["Jc"] != "" }
 
 type confPeer struct {
 	PublicKey    string
@@ -133,7 +171,11 @@ type confPeer struct {
 var kvLineRe = regexp.MustCompile(`^\s*([A-Za-z0-9]+)\s*=\s*(.+?)\s*$`)
 
 func parseWgConfInterface(conf string) wgInterfaceParams {
-	var p wgInterfaceParams
+	p := wgInterfaceParams{values: make(map[string]string, len(obfuscationKeys))}
+	known := make(map[string]bool, len(obfuscationKeys))
+	for _, k := range obfuscationKeys {
+		known[k] = true
+	}
 	inInterface := false
 	for _, line := range strings.Split(conf, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -152,29 +194,8 @@ func parseWgConfInterface(conf string) wgInterfaceParams {
 		if m == nil {
 			continue
 		}
-		switch m[1] {
-		case "Jc":
-			p.Jc = m[2]
-		case "Jmin":
-			p.Jmin = m[2]
-		case "Jmax":
-			p.Jmax = m[2]
-		case "S1":
-			p.S1 = m[2]
-		case "S2":
-			p.S2 = m[2]
-		case "S3":
-			p.S3 = m[2]
-		case "S4":
-			p.S4 = m[2]
-		case "H1":
-			p.H1 = m[2]
-		case "H2":
-			p.H2 = m[2]
-		case "H3":
-			p.H3 = m[2]
-		case "H4":
-			p.H4 = m[2]
+		if known[m[1]] {
+			p.values[m[1]] = m[2]
 		}
 	}
 	return p
@@ -252,17 +273,13 @@ func buildClientConfig(priv, ip string, cfg config.Config, p wgInterfaceParams, 
 	fmt.Fprintf(&b, "PrivateKey = %s\n", priv)
 	fmt.Fprintf(&b, "Address = %s/32\n", ip)
 	fmt.Fprintf(&b, "DNS = %s\n", dns)
-	if p.Jc != "" {
-		fmt.Fprintf(&b, "Jc = %s\nJmin = %s\nJmax = %s\nS1 = %s\nS2 = %s\n",
-			p.Jc, p.Jmin, p.Jmax, p.S1, p.S2)
-		if p.S3 != "" {
-			fmt.Fprintf(&b, "S3 = %s\nS4 = %s\n", p.S3, p.S4)
+	fmt.Fprintf(&b, "MTU = %d\n", clientMTU)
+	// Обфускация переносится как есть из [Interface] сервера — пустые ключи не
+	// пишем: awg-quick на пустом I1-I5 падает, а не игнорирует их.
+	for _, k := range obfuscationKeys {
+		if v := p.get(k); v != "" {
+			fmt.Fprintf(&b, "%s = %s\n", k, v)
 		}
-		fmt.Fprintf(&b, "H1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n", p.H1, p.H2, p.H3, p.H4)
-		// AmneziaWG новых версий добавляет в клиентский конфиг ещё пустые поля
-		// I1-I5 (в нашем серверном wg0.conf их нет). Пишем их для совпадения с
-		// конфигом, который отдаёт штатное приложение Amnezia.
-		b.WriteString("I1 = \nI2 = \nI3 = \nI4 = \nI5 = \n")
 	}
 	b.WriteString("\n[Peer]\n")
 	fmt.Fprintf(&b, "PublicKey = %s\n", serverPub)
@@ -352,7 +369,7 @@ func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
 	}
 	ifaceParams := parseWgConfInterface(confText)
 	var warning string
-	if ifaceParams.Jc == "" {
+	if !ifaceParams.hasObfuscation() {
 		warning = "В секции [Interface] файла " + cfg.WgConfPath + " не найдены параметры обфускации " +
 			"(Jc/Jmin/Jmax/S1/S2/H1-H4). Сгенерированный конфиг будет без них — если версия AmneziaWG " +
 			"на сервере их требует, клиент может не подключиться. Обычно это значит, что конфиг интерфейса " +
@@ -1369,7 +1386,7 @@ func addClient(cfg config.Config, name string) (ReissueResponse, error) {
 	}
 
 	var warning string
-	if ifaceParams.Jc == "" {
+	if !ifaceParams.hasObfuscation() {
 		warning = "В [Interface] wg0.conf нет параметров обфускации (Jc/…): конфиг может не подключиться, если версия AmneziaWG их требует."
 	}
 	return ReissueResponse{

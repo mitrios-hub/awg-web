@@ -4,10 +4,13 @@
 (по умолчанию `amnezia-awg2`) — его ставит и обновляет нативное приложение
 Amnezia. awg-web работает параллельно и контейнер НЕ создаёт.
 
-> Панель рассчитана на актуальное поколение протокола (образ
-> `amneziavpn/amneziawg-go`, контейнер `amnezia-awg2`, интерфейс `awg0`,
+> Панель рассчитана на AmneziaWG 3.1 (образ `amneziavpn/amneziawg-go`,
+> `amneziawg-tools v3.1.x`, контейнер `amnezia-awg2`, интерфейс `awg0`,
 > конфиг `/opt/amnezia/awg/awg0.conf`). Если имена/пути у вас другие —
-> меняются в `config.json` (флаг `-container` у установщика).
+> меняются в `config.json` (флаг `-container` у установщика). Параметры
+> обфускации 3.1 (`I1`–`I5`, `HeaderProtectionKey`, `ContentPaddingAddition`,
+> рандомизация таймингов) панель переносит в клиентские конфиги из
+> `[Interface]` сервера — см. README.md.
 
 Два пути: установщик (проще) или вручную.
 
