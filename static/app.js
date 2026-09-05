@@ -73,6 +73,8 @@
     renameCancel: document.getElementById("renameCancel"),
     passwordBtn: document.getElementById("passwordBtn"),
     passwordOverlay: document.getElementById("passwordOverlay"),
+    passwordForm: document.getElementById("passwordForm"),
+    passwordUsername: document.getElementById("passwordUsername"),
     passwordCurrentInput: document.getElementById("passwordCurrentInput"),
     passwordNewInput: document.getElementById("passwordNewInput"),
     passwordConfirmInput: document.getElementById("passwordConfirmInput"),
@@ -434,7 +436,7 @@
     }
   }
 
-  async function performChangePassword(current, next) {
+  async function performChangePassword(username, current, next) {
     try {
       const res = await fetch("/api/change-password", {
         method: "POST",
@@ -447,8 +449,27 @@
         throw new Error(err.error || ("HTTP " + res.status));
       }
       showToast("Пароль изменён", false);
+      await storeUpdatedCredential(username, next);
     } catch (e) {
       showToast("Не удалось сменить пароль: " + e.message, true);
+    }
+  }
+
+  // storeUpdatedCredential — явно сообщает браузеру/менеджеру паролей (в т.ч.
+  // Google Password Manager на телефоне), что логин-пароль для этого сайта
+  // обновился. Модалка смены пароля — не обычная форма с переходом на другую
+  // страницу (как /login), а SPA-фетч, поэтому штатная эвристика "предложить
+  // обновить пароль" здесь сама не сработает: Credential Management API
+  // (navigator.credentials.store) — единственный надёжный способ для такого
+  // случая. Поддерживается в Chrome/Android; там, где API нет (Firefox,
+  // Safari), просто тихо ничего не делаем — хуже не будет.
+  async function storeUpdatedCredential(username, password) {
+    if (!window.PasswordCredential || !navigator.credentials || !navigator.credentials.store) return;
+    try {
+      const cred = new PasswordCredential({ id: username, password: password, name: username });
+      await navigator.credentials.store(cred);
+    } catch (e) {
+      /* не критично — просто не предложит обновить сохранённый пароль */
     }
   }
 
@@ -534,6 +555,7 @@
       closeAdd();
       closeBackup();
       closeRename();
+      closePassword();
     }
   });
 
@@ -599,7 +621,12 @@
   function closePassword() {
     els.passwordOverlay.classList.remove("is-open");
   }
-  function submitPassword() {
+  // submit — настоящее событие <form>, а не клик по кнопке: это то, что нужно
+  // Credential Management API (storeUpdatedCredential) и вообще семантически
+  // правильно для полей с autocomplete=current-password/new-password.
+  els.passwordForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const username = els.passwordUsername.value;
     const current = els.passwordCurrentInput.value;
     const next = els.passwordNewInput.value;
     const confirm = els.passwordConfirmInput.value;
@@ -618,19 +645,21 @@
       return;
     }
     closePassword();
-    performChangePassword(current, next);
-  }
+    performChangePassword(username, current, next);
+  });
   els.passwordBtn.addEventListener("click", openPassword);
   els.passwordCancel.addEventListener("click", closePassword);
-  els.passwordOk.addEventListener("click", submitPassword);
   els.passwordOverlay.addEventListener("click", (e) => {
     if (e.target === els.passwordOverlay) closePassword();
   });
-  [els.passwordCurrentInput, els.passwordNewInput, els.passwordConfirmInput].forEach((inp) => {
-    inp.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") submitPassword();
-      else if (e.key === "Escape") closePassword();
-    });
+  els.passwordCurrentInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closePassword();
+  });
+  els.passwordNewInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closePassword();
+  });
+  els.passwordConfirmInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closePassword();
   });
 
   els.addBtn.addEventListener("click", openAdd);

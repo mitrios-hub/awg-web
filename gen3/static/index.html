@@ -170,15 +170,18 @@
 
 <div class="confirm-overlay" id="passwordOverlay">
   <div class="confirm-box">
-    <div class="confirm-box__title">Сменить пароль</div>
-    <div class="confirm-box__text">Новый пароль применится сразу — сессии на других устройствах не сбрасываются.</div>
-    <input class="text-input" id="passwordCurrentInput" type="password" placeholder="Текущий пароль" autocomplete="current-password" spellcheck="false">
-    <input class="text-input" id="passwordNewInput" type="password" placeholder="Новый пароль (минимум 8 символов)" autocomplete="new-password" spellcheck="false">
-    <input class="text-input" id="passwordConfirmInput" type="password" placeholder="Повтори новый пароль" autocomplete="new-password" spellcheck="false">
-    <div class="confirm-box__actions">
-      <button class="btn btn--ghost" id="passwordCancel">Отмена</button>
-      <button class="btn btn--primary" id="passwordOk">Сохранить</button>
-    </div>
+    <form id="passwordForm" autocomplete="on">
+      <div class="confirm-box__title">Сменить пароль</div>
+      <div class="confirm-box__text">Новый пароль применится сразу — сессии на других устройствах не сбрасываются.</div>
+      <input type="hidden" id="passwordUsername" name="username" autocomplete="username" value="{{.AuthUser}}">
+      <input class="text-input" id="passwordCurrentInput" name="current-password" type="password" placeholder="Текущий пароль" autocomplete="current-password" spellcheck="false">
+      <input class="text-input" id="passwordNewInput" name="new-password" type="password" placeholder="Новый пароль (минимум 8 символов)" autocomplete="new-password" spellcheck="false">
+      <input class="text-input" id="passwordConfirmInput" name="confirm-password" type="password" placeholder="Повтори новый пароль" autocomplete="new-password" spellcheck="false">
+      <div class="confirm-box__actions">
+        <button class="btn btn--ghost" type="button" id="passwordCancel">Отмена</button>
+        <button class="btn btn--primary" type="submit" id="passwordOk">Сохранить</button>
+      </div>
+    </form>
   </div>
 </div>
 

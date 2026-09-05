@@ -84,7 +84,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "1.9"
+const AppVersion = "2.0"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -1869,6 +1869,16 @@ func checkCreds(user, pass string) bool {
 	return subtleEqual(user, u) && bcrypt.CompareHashAndPassword([]byte(h), []byte(pass)) == nil
 }
 
+// currentAuthUser — текущий логин (не секрет), нужен фронтенду в форме смены
+// пароля для navigator.credentials.store() (см. static/app.js): без явного id
+// браузер/менеджер паролей телефона не поймёт, что это обновление уже
+// сохранённого логина, и не предложит обновить запись.
+func currentAuthUser() string {
+	authMu.Lock()
+	defer authMu.Unlock()
+	return authUser
+}
+
 func setSessionCookie(c *gin.Context, tok string, tls bool) {
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     sessionCookie,
@@ -2022,7 +2032,7 @@ func main() {
 	authorized.StaticFS("/static", http.Dir("./static"))
 	authorized.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
-		if err := indexTmpl.Execute(c.Writer, gin.H{"Version": AppVersion}); err != nil {
+		if err := indexTmpl.Execute(c.Writer, gin.H{"Version": AppVersion, "AuthUser": currentAuthUser()}); err != nil {
 			c.String(http.StatusInternalServerError, "не удалось отрендерить index.html: %v", err)
 		}
 	})
