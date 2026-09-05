@@ -1,13 +1,13 @@
 # awg-web — быстрый старт
 
 Предусловие: на сервере (Linux x86_64) **уже запущен контейнер AmneziaWG**
-(`amnezia-awg`) — его ставит и обновляет нативное приложение Amnezia. awg-web
-работает параллельно и контейнер НЕ создаёт.
+(по умолчанию `amnezia-awg2`) — его ставит и обновляет нативное приложение
+Amnezia. awg-web работает параллельно и контейнер НЕ создаёт.
 
-> Это инструкция для классического поколения протокола (контейнер
-> `amnezia-awg`, интерфейс `wg0`). Если сервер уже на актуальном поколении
-> 3.1 (`amneziawg-go`, контейнер обычно `amnezia-awg2`, интерфейс `awg0`) —
-> нужна отдельная сборка из `gen3/` (свой `go.mod`), см. README.md в корне.
+> Панель рассчитана на актуальное поколение протокола (образ
+> `amneziavpn/amneziawg-go`, контейнер `amnezia-awg2`, интерфейс `awg0`,
+> конфиг `/opt/amnezia/awg/awg0.conf`). Если имена/пути у вас другие —
+> меняются в `config.json` (флаг `-container` у установщика).
 
 Два пути: установщик (проще) или вручную.
 
@@ -87,10 +87,10 @@ sudo ./hashpw -config ./config.json -user admin
 ```json
 {
   "listen_addr": "0.0.0.0:10001",
-  "container": "amnezia-awg",
-  "wg_interface": "wg0",
+  "container": "amnezia-awg2",
+  "wg_interface": "awg0",
   "clients_table_path": "/opt/amnezia/awg/clientsTable",
-  "wg_conf_path": "/opt/amnezia/awg/wg0.conf",
+  "wg_conf_path": "/opt/amnezia/awg/awg0.conf",
   "client_endpoint": "АДРЕС_ИЛИ_ДОМЕН",
   "client_dns": "1.1.1.1, 1.0.0.1",
   "auth_user": "admin",

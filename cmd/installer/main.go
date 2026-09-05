@@ -4,7 +4,7 @@
 // наш софт работает параллельно и контейнер не создаёт).
 //
 // Что делает: подключается по SSH → проверяет Docker и наличие запущенного
-// контейнера amnezia-awg → спрашивает порт панели, логин/пароль панели, внешний
+// контейнера amnezia-awg2 → спрашивает порт панели, логин/пароль панели, внешний
 // адрес и режим доступа → заливает встроенные (go:embed) бинарник awg-web +
 // static, пишет config.json и systemd-юнит, запускает сервис.
 //
@@ -55,7 +55,7 @@ func main() {
 	flag.StringVar(&o.adminUser, "admin-user", "admin", "логин панели")
 	flag.StringVar(&o.adminPass, "admin-pass", "", "пароль панели")
 	flag.StringVar(&o.endpoint, "endpoint", "", "внешний адрес сервера для клиентских конфигов (IP/домен)")
-	flag.StringVar(&o.container, "container", "amnezia-awg", "имя контейнера AmneziaWG")
+	flag.StringVar(&o.container, "container", "amnezia-awg2", "имя контейнера AmneziaWG")
 	flag.StringVar(&o.expose, "expose", "", "доступ к панели: local (127.0.0.1 + SSH-туннель) или public")
 	flag.BoolVar(&o.assumeYes, "yes", false, "не задавать вопросы (для автоматизации)")
 	flag.Parse()
@@ -187,9 +187,9 @@ func run(o *opts) error {
 	cfg := map[string]any{
 		"listen_addr":        listenAddr,
 		"container":          o.container,
-		"wg_interface":       "wg0",
+		"wg_interface":       "awg0",
 		"clients_table_path": "/opt/amnezia/awg/clientsTable",
-		"wg_conf_path":       "/opt/amnezia/awg/wg0.conf",
+		"wg_conf_path":       "/opt/amnezia/awg/awg0.conf",
 		"client_endpoint":    o.endpoint,
 		"client_dns":         "1.1.1.1, 1.0.0.1",
 		"auth_user":          o.adminUser,
@@ -197,6 +197,7 @@ func run(o *opts) error {
 		"tls_cert_path":      "",
 		"tls_key_path":       "",
 		"traffic_state_path": remoteDir + "/awg-web-traffic.json",
+		"blocked_state_path": remoteDir + "/awg-web-blocked.json",
 	}
 	cfgJSON, _ := json.MarshalIndent(cfg, "", "  ")
 	if err := upload(client, remoteDir+"/config.json", cfgJSON, "600"); err != nil {

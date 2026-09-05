@@ -62,10 +62,10 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		ListenAddr:       "0.0.0.0:10001",
-		Container:        "amnezia-awg",
-		WgInterface:      "wg0",
+		Container:        "amnezia-awg2",
+		WgInterface:      "awg0",
 		ClientsTablePath: "/opt/amnezia/awg/clientsTable",
-		WgConfPath:       "/opt/amnezia/awg/wg0.conf",
+		WgConfPath:       "/opt/amnezia/awg/awg0.conf",
 		ClientDNS:        "1.1.1.1, 1.0.0.1",
 		AuthUser:         "admin",
 		TrafficStatePath: "./awg-web-traffic.json",

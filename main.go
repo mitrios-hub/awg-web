@@ -116,7 +116,12 @@ var rawDropRe = regexp.MustCompile(`-s\s+(\d+\.\d+\.\d+\.\d+)(/32)?.*-j\s+DROP`)
 
 type wgInterfaceParams struct {
 	Jc, Jmin, Jmax, S1, S2 string
-	H1, H2, H3, H4         string
+	// S3, S4 — джанк-параметры cookie-reply/transport пакетов, появились в
+	// текущем (не-legacy) поколении протокола AmneziaWG поверх исходных
+	// Jc/Jmin/Jmax/S1/S2/H1-H4. На legacy-серверах их нет — поле останется
+	// пустым, и в клиентский конфиг они не попадут (см. buildClientConfig).
+	S3, S4         string
+	H1, H2, H3, H4 string
 }
 
 type confPeer struct {
@@ -158,6 +163,10 @@ func parseWgConfInterface(conf string) wgInterfaceParams {
 			p.S1 = m[2]
 		case "S2":
 			p.S2 = m[2]
+		case "S3":
+			p.S3 = m[2]
+		case "S4":
+			p.S4 = m[2]
 		case "H1":
 			p.H1 = m[2]
 		case "H2":
@@ -244,8 +253,12 @@ func buildClientConfig(priv, ip string, cfg config.Config, p wgInterfaceParams, 
 	fmt.Fprintf(&b, "Address = %s/32\n", ip)
 	fmt.Fprintf(&b, "DNS = %s\n", dns)
 	if p.Jc != "" {
-		fmt.Fprintf(&b, "Jc = %s\nJmin = %s\nJmax = %s\nS1 = %s\nS2 = %s\nH1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n",
-			p.Jc, p.Jmin, p.Jmax, p.S1, p.S2, p.H1, p.H2, p.H3, p.H4)
+		fmt.Fprintf(&b, "Jc = %s\nJmin = %s\nJmax = %s\nS1 = %s\nS2 = %s\n",
+			p.Jc, p.Jmin, p.Jmax, p.S1, p.S2)
+		if p.S3 != "" {
+			fmt.Fprintf(&b, "S3 = %s\nS4 = %s\n", p.S3, p.S4)
+		}
+		fmt.Fprintf(&b, "H1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n", p.H1, p.H2, p.H3, p.H4)
 		// AmneziaWG новых версий добавляет в клиентский конфиг ещё пустые поля
 		// I1-I5 (в нашем серверном wg0.conf их нет). Пишем их для совпадения с
 		// конфигом, который отдаёт штатное приложение Amnezia.
@@ -342,9 +355,9 @@ func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
 	if ifaceParams.Jc == "" {
 		warning = "В секции [Interface] файла " + cfg.WgConfPath + " не найдены параметры обфускации " +
 			"(Jc/Jmin/Jmax/S1/S2/H1-H4). Сгенерированный конфиг будет без них — если версия AmneziaWG " +
-			"на сервере их требует, клиент может не подключиться. Обычно это значит, что wg0.conf " +
+			"на сервере их требует, клиент может не подключиться. Обычно это значит, что конфиг интерфейса " +
 			"устарел относительно версии приложения — стоит свериться с актуальным форматом конфига " +
-			"после обновления контейнера amnezia-awg."
+			"после обновления контейнера AmneziaWG."
 	}
 
 	serverPubOut, err := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface, "public-key")
@@ -381,7 +394,7 @@ func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
 	if out, err := dockerExec(cfg.Container, "bash", "-c", syncCmd); err != nil {
 		return ReissueResponse{}, fmt.Errorf(
 			"новый ключ сохранён в %s, но не удалось применить его живьём через wg syncconf: %w (%s). "+
-				"Изменение вступит в силу при следующем перезапуске контейнера amnezia-awg",
+				"Изменение вступит в силу при следующем перезапуске контейнера AmneziaWG",
 			cfg.WgConfPath, err, out)
 	}
 
@@ -1177,7 +1190,7 @@ func dockerBackup(cfg config.Config, path string) error {
 }
 
 // sharedPSK достаёт общий PresharedKey из первого [Peer] в wg0.conf.
-func sharedPSK(conf string) (string, error) {
+func sharedPSK(cfg config.Config, conf string) (string, error) {
 	for _, block := range strings.Split(conf, "[Peer]")[1:] {
 		for _, line := range strings.Split(block, "\n") {
 			if m := kvLineRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil && m[1] == "PresharedKey" {
@@ -1185,7 +1198,20 @@ func sharedPSK(conf string) (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("в wg0.conf не найден PresharedKey ни в одном [Peer] — не с чего взять общий PSK")
+	// Ни одного [Peer] ещё нет (самый первый клиент на свежепоставленном
+	// сервере) — берём общий PSK из файла, который сгенерировал сам установщик
+	// протокола (configure_container.sh) рядом с awg0.conf.
+	keyPath := path.Join(path.Dir(cfg.WgConfPath), "wireguard_psk.key")
+	out, err := dockerExec(cfg.Container, "cat", keyPath)
+	if err != nil {
+		return "", fmt.Errorf("в %s нет ни одного [Peer], и не удалось прочитать %s: %w (%s)",
+			cfg.WgConfPath, keyPath, err, out)
+	}
+	psk := strings.TrimSpace(out)
+	if psk == "" {
+		return "", fmt.Errorf("в %s нет ни одного [Peer], а %s пуст — не с чего взять общий PSK", cfg.WgConfPath, keyPath)
+	}
+	return psk, nil
 }
 
 // subnetPrefix возвращает префикс подсети ("10.8.1.") из строки Address секции
@@ -1289,7 +1315,7 @@ func addClient(cfg config.Config, name string) (ReissueResponse, error) {
 	}
 	ifaceParams := parseWgConfInterface(confText)
 
-	psk, err := sharedPSK(confText)
+	psk, err := sharedPSK(cfg, confText)
 	if err != nil {
 		return ReissueResponse{}, err
 	}
@@ -1641,7 +1667,7 @@ func buildBackup(cfg config.Config) (BackupBundle, error) {
 		return BackupBundle{}, fmt.Errorf("не удалось прочитать %s: %w (%s)", cfg.WgConfPath, err, conf)
 	}
 	serverPubOut, _ := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface, "public-key")
-	psk, _ := sharedPSK(conf)
+	psk, _ := sharedPSK(cfg, conf)
 
 	// имена/даты из clientsTable по публичному ключу
 	type meta struct{ name, date string }
@@ -1738,7 +1764,7 @@ func restoreBackup(cfg config.Config, b BackupBundle, full bool) (int, error) {
 		ifaceText = b.Server.InterfaceText // принимаем идентичность из бэкапа
 	} else {
 		ifaceText = interfaceSection(curConf) // сохраняем текущую идентичность
-		psk, err := sharedPSK(curConf)
+		psk, err := sharedPSK(cfg, curConf)
 		if err != nil {
 			return 0, err
 		}
