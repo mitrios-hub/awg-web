@@ -4,6 +4,11 @@
 (`amnezia-awg`) — его ставит и обновляет нативное приложение Amnezia. awg-web
 работает параллельно и контейнер НЕ создаёт.
 
+> Это инструкция для классического поколения протокола (контейнер
+> `amnezia-awg`, интерфейс `wg0`). Если сервер уже на актуальном поколении
+> 3.1 (`amneziawg-go`, контейнер обычно `amnezia-awg2`, интерфейс `awg0`) —
+> нужна отдельная сборка из `gen3/` (свой `go.mod`), см. README.md в корне.
+
 Два пути: установщик (проще) или вручную.
 
 ---
@@ -92,7 +97,8 @@ sudo ./hashpw -config ./config.json -user admin
   "auth_pass_hash": "...",
   "tls_cert_path": "",
   "tls_key_path": "",
-  "traffic_state_path": "./awg-web-traffic.json"
+  "traffic_state_path": "./awg-web-traffic.json",
+  "blocked_state_path": "./awg-web-blocked.json"
 }
 ```
 
@@ -122,6 +128,11 @@ sudo systemctl status awg-web
 
 ### Смена пароля позже
 
+Проще всего — прямо в панели, кнопкой рядом с «Выйти» (текущий пароль → новый,
+без рестарта сервиса; браузер/менеджер паролей на телефоне сам предложит
+обновить сохранённый пароль).
+
+Если панель недоступна — через `hashpw` напрямую на сервере:
 ```bash
 cd /opt/awg-web
 sudo ./hashpw -config ./config.json -user admin
