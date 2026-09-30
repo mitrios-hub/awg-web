@@ -29,6 +29,7 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -84,7 +85,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "2.1"
+const AppVersion = "2.2"
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -2000,6 +2001,83 @@ func subtleEqual(a, b string) bool {
 // свежий файл вместо кэша — не полагаясь только на заголовки Cache-Control.
 var indexTmpl *template.Template
 
+// ===================== TLS: горячая перезагрузка сертификата =====================
+//
+// Сертификат Let's Encrypt продлевается автоматически (acme.sh) раз в ~2 месяца,
+// но http.ListenAndServeTLS читает файлы РОВНО ОДИН РАЗ при старте и дальше
+// держит сертификат в памяти. После продления панель продолжала отдавать старый
+// до ручного перезапуска службы — браузер показывал ошибку сертификата, а в
+// журнале было "remote error: tls: bad certificate". Обходили это внешним хуком
+// (--reloadcmd у acme.sh), но хук легко потерять при переносе сервера или
+// переезде на другой домен — что ровно и случилось.
+//
+// certReloader отдаёт сертификат через tls.Config.GetCertificate и сверяет mtime
+// обоих файлов: изменились — перечитывает. Если перечитать не удалось (например,
+// acme.sh успел записать только один файл из пары), продолжаем отдавать последний
+// рабочий сертификат и пишем в лог, но соединения не рвём и не падаем.
+type certReloader struct {
+	certPath string
+	keyPath  string
+
+	mu      sync.Mutex
+	cert    *tls.Certificate
+	certMod time.Time
+	keyMod  time.Time
+}
+
+// newCertReloader загружает пару сразу: неверные пути должны валить старт, а не
+// всплывать при первом запросе браузера.
+func newCertReloader(certPath, keyPath string) (*certReloader, error) {
+	cr := &certReloader{certPath: certPath, keyPath: keyPath}
+	if err := cr.reload(); err != nil {
+		return nil, err
+	}
+	return cr, nil
+}
+
+// reload перечитывает файлы и запоминает их mtime. Вызывается под mu (кроме
+// первичной загрузки, где конкуренции ещё нет).
+func (cr *certReloader) reload() error {
+	certInfo, err := os.Stat(cr.certPath)
+	if err != nil {
+		return fmt.Errorf("сертификат %s: %w", cr.certPath, err)
+	}
+	keyInfo, err := os.Stat(cr.keyPath)
+	if err != nil {
+		return fmt.Errorf("приватный ключ %s: %w", cr.keyPath, err)
+	}
+	pair, err := tls.LoadX509KeyPair(cr.certPath, cr.keyPath)
+	if err != nil {
+		return fmt.Errorf("пара сертификат/ключ не загружается: %w", err)
+	}
+	cr.cert = &pair
+	cr.certMod = certInfo.ModTime()
+	cr.keyMod = keyInfo.ModTime()
+	return nil
+}
+
+// GetCertificate вызывается на каждое TLS-рукопожатие.
+func (cr *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+
+	changed := false
+	if fi, err := os.Stat(cr.certPath); err == nil && !fi.ModTime().Equal(cr.certMod) {
+		changed = true
+	}
+	if fi, err := os.Stat(cr.keyPath); err == nil && !fi.ModTime().Equal(cr.keyMod) {
+		changed = true
+	}
+	if changed {
+		if err := cr.reload(); err != nil {
+			log.Printf("⚠ обновлённый сертификат не перечитался (%v) — продолжаю отдавать предыдущий", err)
+		} else {
+			log.Printf("сертификат перечитан с диска: %s", cr.certPath)
+		}
+	}
+	return cr.cert, nil
+}
+
 func main() {
 	configPath := flag.String("config", "./config.json", "путь к JSON-файлу конфигурации")
 	flag.Parse()
@@ -2275,7 +2353,21 @@ func main() {
 		scheme, cfg.ListenAddr, cfg.Container, cfg.WgInterface, *configPath)
 
 	if tlsEnabled {
-		log.Fatal(r.RunTLS(cfg.ListenAddr, cfg.TLSCertPath, cfg.TLSKeyPath))
+		// Не r.RunTLS: он читает сертификат один раз и не замечает продления.
+		reloader, err := newCertReloader(cfg.TLSCertPath, cfg.TLSKeyPath)
+		if err != nil {
+			log.Fatalf("TLS: %v", err)
+		}
+		srv := &http.Server{
+			Addr:    cfg.ListenAddr,
+			Handler: r,
+			TLSConfig: &tls.Config{
+				MinVersion:     tls.VersionTLS12,
+				GetCertificate: reloader.GetCertificate,
+			},
+		}
+		// Пути пустые намеренно: сертификат отдаёт GetCertificate.
+		log.Fatal(srv.ListenAndServeTLS("", ""))
 	} else {
 		log.Fatal(r.Run(cfg.ListenAddr))
 	}
