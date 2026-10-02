@@ -3,7 +3,7 @@
 
 ## WEB-приложение для контроля клиентов Amnezia-VPN
 
-![Смотри ScreenShot.png в корневой директории](ScreenShot.png?raw=true)
+![Смотри ScreenShot.png в корневой директории](ScreenShot.png)
 
 ### Описание
 **ВНИМАНИЕ** при изменении конфига перезапустить сервис `systemctl restart awg-web`!
