@@ -446,6 +446,12 @@ table.peers {
 .status-pill--active { color: var(--teal); }
 .status-pill--blocked { color: var(--red); }
 
+/* ни разу не подключался — вся строка серая; кнопки действий остаются как есть */
+.row--never .name-cell,
+.row--never .ip-cell,
+.row--never .traffic-cell { color: var(--text-dim); }
+.row--never .status-pill { filter: grayscale(1); opacity: 0.55; }
+
 .empty-state {
   text-align: center;
   padding: 40px 16px;

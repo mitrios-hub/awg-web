@@ -660,7 +660,10 @@ func fetchBlockedSet(cfg config.Config) (map[string]bool, error) {
 // по IP молча теряло таких пользователей. IP/endpoint/последний handshake
 // берутся из живого "wg show <if>" — он не зависит от того, обновляет ли
 // сама Amnezia clientsTable вовремя (а она, судя по всему, не всегда).
-func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error) {
+// В список попадают ВСЕ клиенты, в том числе ни разу не подключавшиеся
+// (neverSeen): фильтр «только не подключавшиеся» и серую подсветку таких
+// строк делает фронтенд.
+func buildUsers(cfg config.Config) (UsersResponse, error) {
 	clients, err := fetchClients(cfg)
 	if err != nil {
 		return UsersResponse{}, err
@@ -747,15 +750,8 @@ func buildUsers(cfg config.Config, includeNeverSeen bool) (UsersResponse, error)
 			}
 		}
 
-		// "Никогда не подключавшиеся" считаем всегда — счётчик в карточке
-		// должен показывать их реальное количество независимо от того,
-		// включены ли они в видимый список (галочка includeNeverSeen).
 		if neverSeen {
 			summary.NeverSeen++
-		}
-
-		if neverSeen && !includeNeverSeen {
-			continue
 		}
 
 		num++
@@ -2179,8 +2175,7 @@ func main() {
 	api := authorized.Group("/api")
 	{
 		api.GET("/users", func(c *gin.Context) {
-			includeNever := c.Query("includeNever") == "true"
-			resp, err := buildUsers(cfg, includeNever)
+			resp, err := buildUsers(cfg)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return

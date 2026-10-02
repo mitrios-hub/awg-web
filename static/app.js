@@ -8,7 +8,7 @@
     users: [],
     summary: null,
     fetchedAt: null,
-    includeNever: false,
+    onlyNever: false, // галочка «Не подключались»: только ни разу не подключавшиеся
     search: "",
     statusFilter: "all", // "all" | "online" | "blocked"
   };
@@ -42,7 +42,7 @@
     appVersion: document.getElementById("appVersion"),
     searchInput: document.getElementById("searchInput"),
     statusFilter: document.getElementById("statusFilter"),
-    includeNeverToggle: document.getElementById("includeNeverToggle"),
+    onlyNeverToggle: document.getElementById("onlyNeverToggle"),
     tableBody: document.getElementById("tableBody"),
     statTotal: document.getElementById("statTotal"),
     statActive: document.getElementById("statActive"),
@@ -119,8 +119,7 @@
       els.tableBody.innerHTML = '<tr><td colspan="8" class="empty-state">Загрузка…</td></tr>';
     }
     try {
-      const url = "/api/users?includeNever=" + (state.includeNever ? "true" : "false");
-      const res = await fetch(url, { credentials: "same-origin" });
+      const res = await fetch("/api/users", { credentials: "same-origin" });
       if (res.status === 401) { location.href = "/login"; return; }
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -235,6 +234,7 @@
     if (init || e.vHs !== u.handshake || e.vNeverSeen !== u.neverSeen) {
       e.cHs.textContent = u.handshake;
       e.cHs.className = u.neverSeen ? "hs-cell hs-cell--never" : "hs-cell";
+      e.tr.classList.toggle("row--never", u.neverSeen); // ни разу не подключался — строка серая
       e.vHs = u.handshake;
       e.vNeverSeen = u.neverSeen;
     }
@@ -269,6 +269,7 @@
     const filtered = state.users.filter((u) => {
       if (state.statusFilter === "online" && !u.recentlyActive) return false;
       if (state.statusFilter === "blocked" && !u.blocked) return false;
+      if (state.onlyNever && !u.neverSeen) return false;
       if (!q) return true;
       return u.name.toLowerCase().includes(q) || u.ip.toLowerCase().includes(q);
     });
@@ -816,9 +817,9 @@
     state.search = e.target.value;
     render();
   });
-  els.includeNeverToggle.addEventListener("change", (e) => {
-    state.includeNever = e.target.checked;
-    loadUsers(); // строки "не подключавшихся" плавно добавятся/уберутся реконсиляцией
+  els.onlyNeverToggle.addEventListener("change", (e) => {
+    state.onlyNever = e.target.checked;
+    render(); // фильтр на клиенте: сервер всегда отдаёт всех
   });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) loadUsers();
