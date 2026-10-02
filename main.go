@@ -85,7 +85,19 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "2.2"
+const AppVersion = "2.3"
+
+// hostName — имя сервера (то, что выдаёт hostname) для шапки и заголовка вкладки:
+// «nl1 - AmneziaWG v2.3». Когда открыто несколько панелей (lv, u1, nl1…), сразу
+// видно, на каком сервере работаешь. Пусто, если ОС имя не отдала, — тогда
+// шапка как раньше, без префикса.
+var hostName = func() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(h)
+}()
 
 type Summary struct {
 	Total     int `json:"total"`
@@ -2134,6 +2146,12 @@ func main() {
 		}
 		c.File("./static/login.html")
 	})
+	// значок вкладки — публичный, иначе на странице входа его не будет
+	// (/static/* отдаётся только после входа)
+	r.GET("/favicon.svg", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+		c.File("./static/favicon.svg")
+	})
 	r.POST("/api/login", loginHandler(tlsEnabled))
 	r.POST("/api/logout", logoutHandler)
 
@@ -2153,7 +2171,7 @@ func main() {
 	authorized.StaticFS("/static", http.Dir("./static"))
 	authorized.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
-		if err := indexTmpl.Execute(c.Writer, gin.H{"Version": AppVersion, "AuthUser": currentAuthUser()}); err != nil {
+		if err := indexTmpl.Execute(c.Writer, gin.H{"Version": AppVersion, "AuthUser": currentAuthUser(), "Host": hostName}); err != nil {
 			c.String(http.StatusInternalServerError, "не удалось отрендерить index.html: %v", err)
 		}
 	})

@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AmneziaWG · Панель управления</title>
+<title>{{if .Host}}{{.Host}} - {{end}}AmneziaWG · Панель управления</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <script>
   // применяем сохранённую тему ДО отрисовки, чтобы не было "мигания" темой
   (function () {
@@ -21,7 +22,7 @@
     <div class="brand">
       <span class="brand__mark" aria-hidden="true"></span>
       <div class="brand__text">
-        <div class="brand__title">AmneziaWG <span class="brand__version" id="appVersion"></span></div>
+        <div class="brand__title">{{if .Host}}{{.Host}} - {{end}}AmneziaWG <span class="brand__version" id="appVersion"></span></div>
         <div class="brand__subtitle" id="containerName">панель управления пирами</div>
       </div>
     </div>
