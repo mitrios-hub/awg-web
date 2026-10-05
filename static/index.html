@@ -95,16 +95,16 @@
   </section>
 
   <section class="table-wrap">
-    <table class="peers">
+    <table class="peers" id="peersTable">
       <thead>
         <tr>
-          <th class="col-num">#</th>
-          <th>Имя</th>
-          <th>IP</th>
-          <th>Endpoint</th>
-          <th>Трафик</th>
-          <th>Последний handshake</th>
-          <th>Статус</th>
+          <th class="col-num" data-sort="num"><button type="button" class="sort-btn">#</button></th>
+          <th data-sort="name"><button type="button" class="sort-btn">Имя</button></th>
+          <th data-sort="ip"><button type="button" class="sort-btn">IP</button></th>
+          <th data-sort="endpoint"><button type="button" class="sort-btn">Endpoint</button></th>
+          <th data-sort="traffic"><button type="button" class="sort-btn">Трафик</button></th>
+          <th data-sort="handshake"><button type="button" class="sort-btn">Последний handshake</button></th>
+          <th data-sort="status"><button type="button" class="sort-btn">Статус</button></th>
           <th class="col-action"></th>
         </tr>
       </thead>

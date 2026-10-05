@@ -76,6 +76,7 @@ type User struct {
 	Name           string `json:"name"`
 	Endpoint       string `json:"endpoint"`
 	Handshake      string `json:"handshake"`
+	HandshakeAgo   int64  `json:"handshakeAgo"` // секунд с последнего handshake; -1 — никогда/не распознано (для сортировки)
 	TrafficBytes   int64  `json:"trafficBytes"`
 	NeverSeen      bool   `json:"neverSeen"`
 	Blocked        bool   `json:"blocked"`
@@ -85,7 +86,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "2.3"
+const AppVersion = "2.4"
 
 // hostName — имя сервера (то, что выдаёт hostname) для шапки и заголовка вкладки:
 // «nl1 - AmneziaWG v2.3». Когда открыто несколько панелей (lv, u1, nl1…), сразу
@@ -603,6 +604,34 @@ func formatHandshake(s string) string {
 	return strings.Join(parts, " ")
 }
 
+// handshakeSeconds — тот же текст от wg ("1 hour, 2 minutes, 3 seconds ago"),
+// но в секундах — фронтенд сортирует по нему колонку handshake. -1, если
+// распознать не удалось (сортируется в конец, как «никогда»).
+func handshakeSeconds(s string) int64 {
+	var total int64
+	matched := false
+	for _, mm := range handshakeUnitRe.FindAllStringSubmatch(s, -1) {
+		n, _ := strconv.ParseInt(mm[1], 10, 64)
+		matched = true
+		switch mm[2] {
+		case "week":
+			total += n * 7 * 86400
+		case "day":
+			total += n * 86400
+		case "hour":
+			total += n * 3600
+		case "minute":
+			total += n * 60
+		case "second":
+			total += n
+		}
+	}
+	if !matched {
+		return -1
+	}
+	return total
+}
+
 // isRecentHandshake — грубая эвристика "живой прямо сейчас" по тексту от
 // wg (часы/дни/недели — не недавно; минуты — недавно, если меньше 3;
 // только секунды — точно недавно).
@@ -737,6 +766,7 @@ func buildUsers(cfg config.Config) (UsersResponse, error) {
 
 		endpoint := "N/A"
 		handshake := "никогда"
+		handshakeAgo := int64(-1)
 		neverSeen := true
 		recentlyActive := false
 		if haveLive {
@@ -745,6 +775,7 @@ func buildUsers(cfg config.Config) (UsersResponse, error) {
 			}
 			if peer.HandshakeText != "" {
 				handshake = formatHandshake(peer.HandshakeText)
+				handshakeAgo = handshakeSeconds(peer.HandshakeText)
 				neverSeen = false
 				recentlyActive = isRecentHandshake(peer.HandshakeText)
 			}
@@ -771,6 +802,7 @@ func buildUsers(cfg config.Config) (UsersResponse, error) {
 			Name:           name,
 			Endpoint:       endpoint,
 			Handshake:      handshake,
+			HandshakeAgo:   handshakeAgo,
 			TrafficBytes:   trafficTotals[key],
 			NeverSeen:      neverSeen,
 			Blocked:        isBlocked,

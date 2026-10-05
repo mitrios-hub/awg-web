@@ -11,6 +11,8 @@
     onlyNever: false, // галочка «Не подключались»: только ни разу не подключавшиеся
     search: "",
     statusFilter: "all", // "all" | "online" | "blocked"
+    sortKey: "ip", // колонка сортировки (data-sort у <th>); по умолчанию — как отдаёт сервер
+    sortDir: 1, // 1 — по возрастанию, -1 — по убыванию
   };
 
   const REFRESH_MS = 1000;
@@ -44,6 +46,7 @@
     statusFilter: document.getElementById("statusFilter"),
     onlyNeverToggle: document.getElementById("onlyNeverToggle"),
     tableBody: document.getElementById("tableBody"),
+    peersHead: document.querySelector("#peersTable thead"),
     statTotal: document.getElementById("statTotal"),
     statActive: document.getElementById("statActive"),
     statBlocked: document.getElementById("statBlocked"),
@@ -253,6 +256,94 @@
     }
   }
 
+  // ---- сортировка по клику на заголовок ----
+  // Клик по колонке — сортировка по возрастанию, повторный — по убыванию.
+  // Пустые значения («никогда», N/A, «—») всегда уходят в конец, независимо от
+  // направления. При равенстве — по IP, чтобы порядок не прыгал между опросами.
+  const SORT_STORAGE_KEY = "awg-web-sort";
+
+  function ipNum(ip) {
+    const p = String(ip || "").split(".").map(Number);
+    if (p.length !== 4 || p.some((n) => isNaN(n))) return null;
+    return ((p[0] * 256 + p[1]) * 256 + p[2]) * 256 + p[3];
+  }
+
+  // endpointKey — "1.2.3.4:51820" → [ip, порт]; не-IPv4 (IPv6) сравниваются строкой
+  function endpointKey(ep) {
+    if (!ep || ep === "N/A") return null;
+    const i = ep.lastIndexOf(":");
+    const n = ipNum(i > 0 ? ep.slice(0, i) : ep);
+    const port = i > 0 ? Number(ep.slice(i + 1)) || 0 : 0;
+    return n == null ? ep : n * 65536 + port;
+  }
+
+  // statusRank — онлайн сейчас, затем активные, затем заблокированные
+  function statusRank(u) {
+    if (u.blocked) return 2;
+    return u.recentlyActive ? 0 : 1;
+  }
+
+  const SORT_VALUE = {
+    num: (u) => u.num,
+    name: (u) => (u.name && u.name !== "—" ? u.name : null),
+    ip: (u) => ipNum(u.ip),
+    endpoint: (u) => endpointKey(u.endpoint),
+    traffic: (u) => (u.trafficBytes > 0 ? u.trafficBytes : null),
+    handshake: (u) => (u.handshakeAgo >= 0 ? u.handshakeAgo : null),
+    status: statusRank,
+  };
+
+  const nameCollator = new Intl.Collator("ru", { numeric: true, sensitivity: "base" });
+
+  function compareValues(a, b) {
+    if (typeof a === "string" || typeof b === "string") return nameCollator.compare(String(a), String(b));
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+
+  function sortUsers(list) {
+    const get = SORT_VALUE[state.sortKey] || SORT_VALUE.ip;
+    const dir = state.sortDir;
+    return list
+      .map((u) => ({ u, v: get(u), ip: ipNum(u.ip) }))
+      .sort((x, y) => {
+        const xe = x.v == null, ye = y.v == null;
+        if (xe !== ye) return xe ? 1 : -1; // пустые — в конец всегда
+        const c = xe ? 0 : compareValues(x.v, y.v) * dir;
+        if (c !== 0) return c;
+        return (x.ip ?? Infinity) - (y.ip ?? Infinity);
+      })
+      .map((x) => x.u);
+  }
+
+  function renderSortHeaders() {
+    for (const th of els.peersHead.querySelectorAll("th[data-sort]")) {
+      const active = th.dataset.sort === state.sortKey;
+      th.classList.toggle("is-sorted", active);
+      th.classList.toggle("is-desc", active && state.sortDir < 0);
+      th.setAttribute("aria-sort", active ? (state.sortDir > 0 ? "ascending" : "descending") : "none");
+    }
+  }
+
+  function setSort(key) {
+    if (state.sortKey === key) {
+      state.sortDir = -state.sortDir;
+    } else {
+      state.sortKey = key;
+      state.sortDir = 1;
+    }
+    try { localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ key: state.sortKey, dir: state.sortDir })); } catch (_) {}
+    renderSortHeaders();
+    render();
+  }
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(SORT_STORAGE_KEY) || "null");
+    if (saved && SORT_VALUE[saved.key] && (saved.dir === 1 || saved.dir === -1)) {
+      state.sortKey = saved.key;
+      state.sortDir = saved.dir;
+    }
+  } catch (_) {}
+
   function render() {
     if (state.summary) {
       els.statTotal.textContent = state.summary.total;
@@ -266,13 +357,13 @@
     }
 
     const q = state.search.trim().toLowerCase();
-    const filtered = state.users.filter((u) => {
+    const filtered = sortUsers(state.users.filter((u) => {
       if (state.statusFilter === "online" && !u.recentlyActive) return false;
       if (state.statusFilter === "blocked" && !u.blocked) return false;
       if (state.onlyNever && !u.neverSeen) return false;
       if (!q) return true;
       return u.name.toLowerCase().includes(q) || u.ip.toLowerCase().includes(q);
-    });
+    }));
 
     const tbody = els.tableBody;
 
@@ -809,6 +900,12 @@
   // ---- events ----
   // делегирование: один обработчик на всю таблицу вместо перенавешивания на
   // каждую кнопку при каждом рендере
+  els.peersHead.addEventListener("click", (e) => {
+    const th = e.target.closest("th[data-sort]");
+    if (th) setSort(th.dataset.sort);
+  });
+  renderSortHeaders();
+
   els.tableBody.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-action]");
     if (btn && els.tableBody.contains(btn)) onActionClick(btn);

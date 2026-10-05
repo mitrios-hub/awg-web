@@ -125,3 +125,18 @@ H4 = 4567890
 		t.Errorf("потеряна легаси-обфускация:\n%s", out)
 	}
 }
+
+func TestHandshakeSeconds(t *testing.T) {
+	cases := map[string]int64{
+		"1 hour, 2 minutes, 3 seconds ago": 3723,
+		"2 days, 5 seconds ago":            172805,
+		"1 week ago":                       604800,
+		"45 seconds ago":                   45,
+		"2026-10-01 12:00:00":              -1,
+	}
+	for in, want := range cases {
+		if got := handshakeSeconds(in); got != want {
+			t.Errorf("handshakeSeconds(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
