@@ -113,11 +113,33 @@ func amneziaNativeKey(conf, description string) (string, bool) {
 	return amneziaKey(string(data)), true
 }
 
+// lookupClientName — имя клиента из clientsTable по его публичному ключу
+// ("" — не нашлось). Переменная — чтобы подменять в тестах без docker.
+var lookupClientName = func(cfg config.Config, pub string) string {
+	entries, err := fetchClients(cfg)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.ClientID == pub {
+			return strings.TrimSpace(e.UserData.ClientName)
+		}
+	}
+	return ""
+}
+
 // clientConnectionName — имя подключения в приложении у клиента: из настройки
-// client_connection_name, иначе hostname сервера, иначе адрес из Endpoint.
+// client_connection_name (одно на всех), иначе имя клиента в панели (ищется
+// по публичному ключу, выведенному из PrivateKey конфига), иначе hostname
+// сервера, иначе адрес из Endpoint.
 func clientConnectionName(cfg config.Config, conf string) string {
 	if n := strings.TrimSpace(cfg.ClientConnectionName); n != "" {
 		return n
+	}
+	if pub, ok := pubFromConf(conf); ok {
+		if n := lookupClientName(cfg, pub); n != "" && n != "—" {
+			return n
+		}
 	}
 	if hostName != "" {
 		return hostName

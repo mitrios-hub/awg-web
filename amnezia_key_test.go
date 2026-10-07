@@ -91,4 +91,23 @@ func TestClientKeyFallbackAndName(t *testing.T) {
 	if n := clientConnectionName(config.Config{ClientConnectionName: " Trubodur NL "}, testClientConf); n != "Trubodur NL" {
 		t.Errorf("имя из настройки: %q", n)
 	}
+
+	// без настройки — имя клиента из clientsTable по ключу из конфига
+	conf, pub := testKeyConf(t)
+	saved := lookupClientName
+	defer func() { lookupClientName = saved }()
+	lookupClientName = func(_ config.Config, p string) string {
+		if p == pub {
+			return "nl-arthur0"
+		}
+		return ""
+	}
+	if n := clientConnectionName(config.Config{}, conf); n != "nl-arthur0" {
+		t.Errorf("имя клиента: %q", n)
+	}
+	// клиента в таблице нет — имя сервера (или адрес из Endpoint)
+	lookupClientName = func(config.Config, string) string { return "" }
+	if n := clientConnectionName(config.Config{}, conf); n == "" || n == "nl-arthur0" {
+		t.Errorf("запасное имя: %q", n)
+	}
 }

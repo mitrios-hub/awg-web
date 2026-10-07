@@ -70,8 +70,8 @@ type Config struct {
 	// подключения.
 	PublicConfDays int `json:"public_conf_days,omitempty"`
 	// ClientConnectionName — как подключение будет называться в приложении
-	// AmneziaVPN у клиента, если он добавил его ключом со страницы /conf/.
-	// Пусто — hostname сервера.
+	// AmneziaVPN у клиента, если он добавил его ключом со страницы /conf/ —
+	// одно на всех. Пусто — имя клиента в панели (или hostname сервера).
 	ClientConnectionName string `json:"client_connection_name,omitempty"`
 }
 
