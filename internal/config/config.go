@@ -69,6 +69,10 @@ type Config struct {
 	// файла (по времени изменения). 0 — без предела, только до первого
 	// подключения.
 	PublicConfDays int `json:"public_conf_days,omitempty"`
+	// ClientConnectionName — как подключение будет называться в приложении
+	// AmneziaVPN у клиента, если он добавил его ключом со страницы /conf/.
+	// Пусто — hostname сервера.
+	ClientConnectionName string `json:"client_connection_name,omitempty"`
 }
 
 func DefaultConfig() Config {

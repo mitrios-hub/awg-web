@@ -119,13 +119,14 @@ func registerPublicConf(r *gin.Engine, cfg config.Config) {
 		if !expires.IsZero() {
 			until = expires.Format("02.01.2006")
 		}
+		key := clientKey(cfg, text) // с именем подключения — иначе в приложении будет «Сервер 1»
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		err := tmpl.Execute(c.Writer, gin.H{
 			"Name":    name,
 			"Host":    hostName,
 			"Conf":    text,
-			"Key":     template.URL(amneziaKey(text)), // иначе html/template заменит схему vpn: на #ZgotmplZ
-			"KeyText": amneziaKey(text),
+			"Key":     template.URL(key), // иначе html/template заменит схему vpn: на #ZgotmplZ
+			"KeyText": key,
 			"Until":   until,
 		})
 		if err != nil {

@@ -75,7 +75,7 @@ func TestPublicConfServesPageFileAndQR(t *testing.T) {
 		t.Fatalf("страница: код %d", w.Code)
 	}
 	page := w.Body.String()
-	if !strings.Contains(page, `href="`+amneziaKey(testClientConf)+`"`) {
+	if !strings.Contains(page, `href="`+clientKey(config.Config{PublicConfDir: dir}, testClientConf)+`"`) {
 		t.Errorf("на странице нет ссылки vpn:// (html/template мог заменить схему на #ZgotmplZ)")
 	}
 	if strings.Contains(page, "ZgotmplZ") {
