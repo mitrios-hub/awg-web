@@ -60,6 +60,7 @@
   .qr img{width:100%;max-width:300px;height:auto;aspect-ratio:1;background:#fff;border-radius:8px;padding:6px;
           image-rendering:pixelated}
   .qr figcaption{color:var(--muted);font-size:13px;margin-top:6px}
+  .nowrap{white-space:nowrap;font-size:min(13px,3.8vw)} /* на самых узких экранах чуть мельче, чтобы строка не вылезала */
   .foot{margin:18px 0 0;color:var(--muted);font-size:13px;text-align:center}
   b{font-weight:600}
 </style>
@@ -113,10 +114,10 @@
 
   <figure class="qr">
     <img src="/conf/{{.Name}}/qr.png" alt="QR-код с настройками" width="300" height="300">
-    <figcaption>Для другого устройства: AmneziaVPN → добавить сервер → QR-код</figcaption>
+    <figcaption>Для другого устройства:<br><span class="nowrap">AmneziaVPN → добавить сервер → QR-код</span></figcaption>
   </figure>
 
-  <p class="foot">{{if .Until}}Ссылка действует до {{.Until}} или до первого подключения.{{else}}Ссылка исчезнет после первого подключения.{{end}}</p>
+  <p class="foot">{{if .Until}}Ссылка действует до {{.Until}} или до первого&nbsp;подключения.{{else}}Ссылка исчезнет после первого&nbsp;подключения.{{end}}</p>
 </main>
 
 <pre id="confText" hidden>{{.Conf}}</pre>
