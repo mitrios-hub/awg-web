@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>{{.Name}} · AmneziaVPN</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  /* Публичная страница: /static/* без входа не отдаётся, поэтому всё здесь. */
+  :root{
+    --bg:#f4f6f9;--panel:#fff;--panel-alt:#eef1f6;--border:#dde3ec;
+    --text:#1b2430;--muted:#5b6b7d;--teal:#0d9b8a;--teal-text:#fff;--ok:#0d9b8a;--err:#d9363e;
+    --shadow:0 8px 24px rgba(20,30,45,.12);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0a0e14;--panel:#121924;--panel-alt:#161f2c;--border:#212b38;
+      --text:#e7edf5;--muted:#7c8a9c;--teal:#35d0ba;--teal-text:#04110f;--ok:#35d0ba;--err:#f2545b;
+      --shadow:0 8px 24px rgba(0,0,0,.4);
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{min-height:100vh;background:var(--bg);color:var(--text);
+       font:15px/1.5 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+       padding:24px 16px 32px;display:flex;justify-content:center}
+  .card{width:100%;max-width:440px;background:var(--panel);border:1px solid var(--border);
+        border-radius:12px;box-shadow:var(--shadow);padding:22px 20px}
+  .warn{margin:0 0 16px;padding:12px 14px;border:1px solid var(--err);border-radius:8px;
+        background:color-mix(in srgb,var(--err) 10%,transparent);color:var(--err);font-size:14px;line-height:1.45}
+  .brand{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px}
+  .brand img{width:26px;height:26px}
+  h1{margin:14px 0 4px;font:600 22px/1.25 ui-monospace,"JetBrains Mono",Consolas,monospace;word-break:break-all}
+  .lead{margin:0 0 18px;color:var(--muted)}
+  .actions{display:flex;flex-direction:column;gap:10px}
+  .btn{display:flex;align-items:center;justify-content:center;min-height:46px;padding:10px 14px;
+       border-radius:8px;border:1px solid var(--border);background:var(--panel-alt);color:var(--text);
+       font-weight:600;font-size:15px;line-height:1.2;font-family:inherit;text-decoration:none;cursor:pointer;text-align:center;
+       -webkit-tap-highlight-color:transparent}
+  .btn.primary{background:var(--teal);border-color:var(--teal);color:var(--teal-text)}
+  .btn:active{transform:translateY(1px)}
+  .btn[hidden]{display:none}
+  .msg{min-height:22px;margin:10px 0 0;font-size:14px;text-align:center}
+  .msg:empty{min-height:0;margin:0}
+  .msg.ok{color:var(--ok)} .msg.err{color:var(--err)}
+  .steps{margin:14px 0 0;padding:14px 16px;background:var(--panel-alt);border-radius:8px;font-size:14px}
+  .steps h2{margin:0 0 6px;font-size:14px}
+  .steps ol{margin:0;padding-left:20px} .steps li+li{margin-top:4px}
+  .steps+.steps{margin-top:10px}
+  .os-android .only-ios,.os-android .only-desktop,
+  .os-ios .only-android,.os-ios .only-desktop,
+  .os-desktop .only-android,.os-desktop .only-ios,
+  .os-android .not-android,.os-ios .not-ios{display:none}
+  .stores{display:flex;gap:8px;margin:-6px 0 16px}
+  .stores .btn{flex:1;min-height:38px;font-size:13px;font-weight:500;color:var(--muted)}
+  .qr{margin:18px 0 0;text-align:center}
+  .qr img{width:100%;max-width:300px;height:auto;aspect-ratio:1;background:#fff;border-radius:8px;padding:6px;
+          image-rendering:pixelated}
+  .qr figcaption{color:var(--muted);font-size:13px;margin-top:6px}
+  .foot{margin:18px 0 0;color:var(--muted);font-size:13px;text-align:center}
+  b{font-weight:600}
+</style>
+</head>
+<body>
+<main class="card">
+  <p class="warn" role="alert"><b>Внимание!</b> Туннель будет работать только на одном устройстве — не делитесь им с другими.</p>
+  <div class="brand"><img src="/favicon.svg" alt=""><span>{{if .Host}}{{.Host}} · {{end}}настройки подключения</span></div>
+  <h1>{{.Name}}</h1>
+  <p class="lead">Нужно приложение <b>AmneziaVPN</b> — установите его, если ещё нет, и вернитесь сюда.</p>
+  <div class="stores">
+    <a class="btn not-android" href="https://apps.apple.com/us/app/amneziavpn/id1600529900" target="_blank" rel="noopener">App Store</a>
+    <a class="btn not-ios" href="https://play.google.com/store/apps/details?id=org.amnezia.vpn" target="_blank" rel="noopener">Google Play</a>
+  </div>
+
+  <div class="actions">
+    <a class="btn primary only-android" id="openApp" href="{{.Key}}">Открыть в AmneziaVPN</a>
+    <button class="btn primary" id="shareBtn" type="button" hidden>Поделиться → AmneziaVPN</button>
+    <button class="btn" id="copyBtn" type="button">Скопировать ключ</button>
+    <a class="btn" id="fileBtn" href="/conf/{{.Name}}/file" download="{{.Name}}.conf">Скачать файл .conf</a>
+  </div>
+  <p class="msg" id="msg" role="status" aria-live="polite"></p>
+
+  <section class="steps only-android">
+    <h2>Android</h2>
+    <ol>
+      <li>Нажмите <b>«Открыть в AmneziaVPN»</b> — приложение откроется и предложит добавить подключение.</li>
+      <li>Если не открылось: <b>«Скопировать ключ»</b>, в AmneziaVPN добавьте сервер и вставьте ключ.</li>
+    </ol>
+  </section>
+  <section class="steps only-ios">
+    <h2>iPhone и iPad</h2>
+    <ol>
+      <li id="iosShareStep">Нажмите <b>«Поделиться»</b> и выберите в списке <b>AmneziaVPN</b> (если её не видно — «Ещё»).</li>
+      <li>Или <b>«Скопировать ключ»</b>, в AmneziaVPN добавьте сервер и вставьте ключ.</li>
+    </ol>
+  </section>
+  <section class="steps only-desktop">
+    <h2>Компьютер</h2>
+    <ol>
+      <li>Скачайте файл и добавьте его в AmneziaVPN как файл с настройками.</li>
+      <li>Или вставьте в AmneziaVPN скопированный ключ.</li>
+      <li>Для телефона: в AmneziaVPN добавьте сервер по QR-коду и отсканируйте код ниже.</li>
+    </ol>
+  </section>
+
+  <figure class="qr">
+    <img src="/conf/{{.Name}}/qr.png" alt="QR-код с настройками" width="300" height="300">
+    <figcaption>Для другого устройства: AmneziaVPN → добавить сервер → QR-код</figcaption>
+  </figure>
+
+  <p class="foot">Ссылка действует до {{.Until}}.</p>
+</main>
+
+<pre id="confText" hidden>{{.Conf}}</pre>
+<pre id="keyText" hidden>{{.KeyText}}</pre>
+<script>
+(function () {
+  var ua = navigator.userAgent;
+  var ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  var android = /Android/i.test(ua);
+  document.documentElement.className = ios ? "os-ios" : android ? "os-android" : "os-desktop";
+
+  var name = {{.Name}};
+  var conf = document.getElementById("confText").textContent;
+  var key = document.getElementById("keyText").textContent;
+  var msg = document.getElementById("msg");
+  function say(text, ok) { msg.textContent = text; msg.className = "msg " + (ok ? "ok" : "err"); }
+
+  // «Поделиться» файлом — главный путь на iPhone: у AmneziaVPN там нет своей
+  // схемы ссылок, зато она принимает .conf из системного меню.
+  var shareBtn = document.getElementById("shareBtn");
+  var file = null;
+  try { file = new File([conf], name + ".conf", { type: "text/plain" }); } catch (e) {}
+  var canShare = false;
+  try { canShare = !!(file && navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) {}
+  if (canShare && (ios || android)) {
+    shareBtn.hidden = false;
+    if (android) shareBtn.classList.remove("primary");
+  } else if (ios) {
+    document.getElementById("iosShareStep").innerHTML =
+      "Нажмите <b>«Скачать файл .conf»</b>, откройте его в «Файлах» → «Поделиться» → <b>AmneziaVPN</b>.";
+  }
+  shareBtn.addEventListener("click", function () {
+    navigator.share({ files: [file] }).catch(function (e) {
+      if (e && e.name !== "AbortError") say("Не получилось поделиться — скачайте файл или скопируйте ключ.", false);
+    });
+  });
+
+  document.getElementById("copyBtn").addEventListener("click", function () {
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = key; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      var ok = false; try { ok = document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(ta);
+      say(ok ? "Ключ скопирован — вставьте его в AmneziaVPN." : "Не удалось скопировать — скачайте файл.", ok);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(key).then(function () {
+        say("Ключ скопирован — вставьте его в AmneziaVPN.", true);
+      }, fallback);
+    } else {
+      fallback();
+    }
+  });
+})();
+</script>
+</body>
+</html>

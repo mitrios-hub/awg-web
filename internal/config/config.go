@@ -57,6 +57,17 @@ type Config struct {
 	// автоматически при следующем опросе. Пустая строка отключает
 	// персистентность (блокировка только в памяти iptables, как раньше).
 	BlockedStatePath string `json:"blocked_state_path"`
+
+	// PublicConfDir — каталог на диске хоста с клиентскими конфигами для
+	// временной раздачи по открытой ссылке https://<панель>/conf/<имя>
+	// (страница с файлом, QR и кнопкой «Открыть в AmneziaVPN»). Отдаётся
+	// только то, что лежит здесь файлом <имя>.conf: приватных ключей
+	// клиентов панель не хранит. Нет каталога — раздачи нет; пустая строка
+	// отключает функцию совсем.
+	PublicConfDir string `json:"public_conf_dir"`
+	// PublicConfDays — сколько дней ссылка работает после записи файла
+	// (по времени изменения). 0 — по умолчанию 14.
+	PublicConfDays int `json:"public_conf_days,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -70,6 +81,7 @@ func DefaultConfig() Config {
 		AuthUser:         "admin",
 		TrafficStatePath: "./awg-web-traffic.json",
 		BlockedStatePath: "./awg-web-blocked.json",
+		PublicConfDir:    "./public-conf",
 	}
 }
 

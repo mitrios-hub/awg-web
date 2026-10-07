@@ -86,7 +86,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "2.4"
+const AppVersion = "2.5"
 
 // hostName — имя сервера (то, что выдаёт hostname) для шапки и заголовка вкладки:
 // «nl1 - AmneziaWG v2.3». Когда открыто несколько панелей (lv, u1, nl1…), сразу
@@ -2182,6 +2182,8 @@ func main() {
 	})
 	r.POST("/api/login", loginHandler(tlsEnabled))
 	r.POST("/api/logout", logoutHandler)
+	// временные открытые ссылки на конфиги /conf/<имя> — см. public_conf.go
+	registerPublicConf(r, cfg)
 
 	// защищённые маршруты (сессия-cookie или Basic Auth)
 	authorized := r.Group("/", sessionAuth())
