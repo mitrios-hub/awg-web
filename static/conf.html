@@ -116,7 +116,7 @@
     <figcaption>Для другого устройства: AmneziaVPN → добавить сервер → QR-код</figcaption>
   </figure>
 
-  <p class="foot">Ссылка действует до {{.Until}}.</p>
+  <p class="foot">{{if .Until}}Ссылка действует до {{.Until}} или до первого подключения.{{else}}Ссылка исчезнет после первого подключения.{{end}}</p>
 </main>
 
 <pre id="confText" hidden>{{.Conf}}</pre>

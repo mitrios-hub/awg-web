@@ -81,12 +81,13 @@ type User struct {
 	NeverSeen      bool   `json:"neverSeen"`
 	Blocked        bool   `json:"blocked"`
 	RecentlyActive bool   `json:"recentlyActive"`
+	PublicPath     string `json:"publicPath,omitempty"` // страница /conf/<имя>, пока клиент не подключился
 }
 
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "2.5"
+const AppVersion = "2.6"
 
 // hostName — имя сервера (то, что выдаёт hostname) для шапки и заголовка вкладки:
 // «nl1 - AmneziaWG v2.3». Когда открыто несколько панелей (lv, u1, nl1…), сразу
@@ -364,6 +365,9 @@ type ReissueResponse struct {
 	ConfigText  string `json:"configText"`
 	QRPngBase64 string `json:"qrPngBase64"`
 	Warning     string `json:"warning,omitempty"`
+	// PublicPath — страница /conf/<имя> с этим конфигом (живёт до первого
+	// подключения); пусто, если раздача по ссылке отключена или не удалась.
+	PublicPath string `json:"publicPath,omitempty"`
 }
 
 func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
@@ -445,6 +449,13 @@ func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
 		return ReissueResponse{}, fmt.Errorf("конфиг перевыпущен, но не удалось сгенерировать QR-код: %w", err)
 	}
 
+	// страница со старым ключом умирает, новая ждёт первого подключения
+	publicPath, err := publishClientConf(cfg, name, ip, oldPeer.PublicKey, newPub, confOut)
+	if err != nil {
+		log.Printf("перевыпуск %s: %v", ip, err)
+		warning = strings.TrimSpace(warning + " Страница со ссылкой не создана: " + err.Error())
+	}
+
 	return ReissueResponse{
 		IP:          ip,
 		Name:        name,
@@ -452,6 +463,7 @@ func reissueClient(cfg config.Config, ip string) (ReissueResponse, error) {
 		ConfigText:  confOut,
 		QRPngBase64: base64.StdEncoding.EncodeToString(png),
 		Warning:     warning,
+		PublicPath:  publicPath,
 	}, nil
 }
 
@@ -732,6 +744,7 @@ func buildUsers(cfg config.Config) (UsersResponse, error) {
 	summary := Summary{}
 	num := 0
 	trafficTotals := getTraffic(cfg) // накопленный трафик по ключу клиента
+	pagesByKey := publicConfPathsByPub(cfg)
 
 	for _, key := range keys {
 		peer, haveLive := wgPeers[key]
@@ -807,6 +820,7 @@ func buildUsers(cfg config.Config) (UsersResponse, error) {
 			NeverSeen:      neverSeen,
 			Blocked:        isBlocked,
 			RecentlyActive: recentlyActive,
+			PublicPath:     pagesByKey[key],
 		})
 	}
 
@@ -1430,6 +1444,11 @@ func addClient(cfg config.Config, name string) (ReissueResponse, error) {
 	if !ifaceParams.hasObfuscation() {
 		warning = "В [Interface] wg0.conf нет параметров обфускации (Jc/…): конфиг может не подключиться, если версия AmneziaWG их требует."
 	}
+	publicPath, err := publishClientConf(cfg, name, ip, "", pub, confOut)
+	if err != nil {
+		log.Printf("добавление %q (%s): %v", name, ip, err)
+		warning = strings.TrimSpace(warning + " Страница со ссылкой не создана: " + err.Error())
+	}
 	return ReissueResponse{
 		IP:          ip,
 		Name:        name,
@@ -1437,6 +1456,7 @@ func addClient(cfg config.Config, name string) (ReissueResponse, error) {
 		ConfigText:  confOut,
 		QRPngBase64: base64.StdEncoding.EncodeToString(png),
 		Warning:     warning,
+		PublicPath:  publicPath,
 	}, nil
 }
 
@@ -1489,7 +1509,11 @@ func renameClient(cfg config.Config, ip, name string) error {
 	if err != nil {
 		return fmt.Errorf("не удалось сериализовать clientsTable: %w", err)
 	}
-	return dockerWriteFile(cfg.Container, cfg.ClientsTablePath, string(data))
+	if err := dockerWriteFile(cfg.Container, cfg.ClientsTablePath, string(data)); err != nil {
+		return err
+	}
+	renameClientConf(cfg, peer.PublicKey, name, ip)
+	return nil
 }
 
 // removePeerByIP убирает из текста wg0.conf блок [Peer], чей AllowedIPs
@@ -1605,6 +1629,7 @@ func deleteClient(cfg config.Config, ip string) error {
 		log.Printf("удаление %s: пир убран из wg0.conf, но запись в clientsTable — нет: %v", ip, err)
 	}
 	_ = unblockIP(cfg, ip) // на случай, если клиент был заблокирован — не оставляем висячее правило
+	dropClientConf(cfg, peer.PublicKey)
 	return nil
 }
 
@@ -1632,6 +1657,7 @@ func deleteClientByKey(cfg config.Config, pub string) error {
 	if err := removeClientFromTable(cfg, pub, ""); err != nil {
 		log.Printf("удаление клиента по ключу %s: запись в clientsTable — нет: %v", pub, err)
 	}
+	dropClientConf(cfg, pub)
 	return nil
 }
 

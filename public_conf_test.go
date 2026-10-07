@@ -110,10 +110,10 @@ func TestPublicConfNotFound(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("x"), 0600)
 	os.Mkdir(filepath.Join(dir, "sub.conf"), 0700)
 
-	r := newPublicConfServer(t, config.Config{PublicConfDir: dir})
+	r := newPublicConfServer(t, config.Config{PublicConfDir: dir, PublicConfDays: 14})
 	for _, u := range []string{
 		"/conf/nobody",         // нет файла
-		"/conf/nl-old0",        // срок вышел (по умолчанию 14 дней)
+		"/conf/nl-old0",        // срок вышел (задан предел 14 дней)
 		"/conf/nl-old0/file",   //
 		"/conf/nl-old0/qr.png", //
 		"/conf/secret.txt",     // точка в имени недопустима
@@ -130,6 +130,12 @@ func TestPublicConfNotFound(t *testing.T) {
 	r = newPublicConfServer(t, config.Config{PublicConfDir: dir, PublicConfDays: 30})
 	if w := get(r, "/conf/nl-old0"); w.Code != http.StatusOK {
 		t.Errorf("public_conf_days=30: код %d, ждали 200", w.Code)
+	}
+
+	// без предела (по умолчанию) страница живёт, пока клиент не подключится
+	r = newPublicConfServer(t, config.Config{PublicConfDir: dir})
+	if w := get(r, "/conf/nl-old0"); w.Code != http.StatusOK {
+		t.Errorf("public_conf_days=0: код %d, ждали 200", w.Code)
 	}
 
 	// пустой каталог в настройке — маршрутов нет вовсе

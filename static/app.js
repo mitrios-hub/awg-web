@@ -23,6 +23,7 @@
     unblock: '<svg class="icon" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6" fill="currentColor"/></svg>',
     reissue: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M4 10a6 6 0 0 1 10.2-4.3M16 10a6 6 0 0 1-10.2 4.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 3v3h-3M6 17v-3h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     delete: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M6 6l8 8M14 6l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    link: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M8.5 11.5a3 3 0 0 0 4.2 0l2.6-2.6a3 3 0 0 0-4.2-4.2l-1 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M11.5 8.5a3 3 0 0 0-4.2 0l-2.6 2.6a3 3 0 0 0 4.2 4.2l1-1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
     pencil: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M4 16h3l8.5-8.5a1.5 1.5 0 0 0 0-2.1l-.9-.9a1.5 1.5 0 0 0-2.1 0L4 13v3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M11.5 5.5l3 3" stroke="currentColor" stroke-width="1.6"/></svg>',
   };
 
@@ -63,6 +64,9 @@
     reissueQr: document.getElementById("reissueQr"),
     reissueDownload: document.getElementById("reissueDownload"),
     reissueCopy: document.getElementById("reissueCopy"),
+    reissueLinkBox: document.getElementById("reissueLinkBox"),
+    reissueLink: document.getElementById("reissueLink"),
+    reissueLinkCopy: document.getElementById("reissueLinkCopy"),
     reissueClose: document.getElementById("reissueClose"),
     addBtn: document.getElementById("addBtn"),
     addOverlay: document.getElementById("addOverlay"),
@@ -168,7 +172,13 @@
     const dataAttr = ' data-ip="' + u.ip + '" data-client-id="' + escapeHtml(u.clientId || "") +
       '" data-name="' + escapeHtml(u.name) + '"';
     const del = '<button class="btn btn--row btn--icon btn--row-delete" data-action="delete"' + dataAttr +
-      ' title="Удалить" aria-label="Удалить">' + ICONS.delete + "</button>";
+      ' title="Удалить" aria-label="Удалить">' + ICONS.delete + "</button>" +
+      // страница /conf/<имя> ждёт первого подключения — ссылку можно скопировать
+      (u.publicPath
+        ? '<button class="btn btn--row btn--icon btn--row-link" data-action="copylink"' + dataAttr + ' data-path="' +
+          escapeHtml(u.publicPath) + '" title="Скопировать ссылку на страницу с конфигом" ' +
+          'aria-label="Скопировать ссылку">' + ICONS.link + "</button>"
+        : '<span class="row-slot" aria-hidden="true"></span>'); // место держим, чтобы кнопки в строках стояли ровно
     // без IP блок/разблок/перевыпуск невозможны (нет с чем сопоставить пира) —
     // для таких битых записей доступно только удаление
     if (!u.ip) {
@@ -241,12 +251,15 @@
       e.vHs = u.handshake;
       e.vNeverSeen = u.neverSeen;
     }
-    // Статус и кнопки перестраиваем только при смене признака блокировки —
-    // тяжёлую часть (иконки) не трогаем каждую секунду.
-    if (init || e.vBlocked !== u.blocked) {
+    // Статус и кнопки перестраиваем только при смене блокировки или
+    // появлении/исчезновении страницы со ссылкой — тяжёлую часть (иконки)
+    // не трогаем каждую секунду.
+    const pub = u.publicPath || "";
+    if (init || e.vBlocked !== u.blocked || e.vPublic !== pub) {
       e.cStatus.innerHTML = statusPillHtml(u);
       e.cAction.innerHTML = actionCellHtml(u);
       e.vBlocked = u.blocked;
+      e.vPublic = pub;
       e.vRecentlyActive = u.recentlyActive;
     } else if (!u.blocked && e.vRecentlyActive !== u.recentlyActive) {
       // только индикатор "онлайн" (пульс) — тоггл класса без перестройки
@@ -409,7 +422,9 @@
     const clientId = btn.dataset.clientId;
     const name = btn.dataset.name;
 
-    if (action === "block") {
+    if (action === "copylink") {
+      copyText(location.origin + btn.dataset.path, "Ссылка для «" + name + "» скопирована");
+    } else if (action === "block") {
       openConfirm(
         "Отключить пользователя",
         "Заблокировать «" + name + "» (" + ip + ")?",
@@ -470,6 +485,11 @@
     els.reissueTitle.textContent = title;
     els.reissueSubtitle.textContent = subtitle;
     els.reissueQr.src = "data:image/png;base64," + data.qrPngBase64;
+    // ссылка на страницу /conf/<имя> — если панель её создала
+    const link = data.publicPath ? location.origin + data.publicPath : "";
+    els.reissueLinkBox.hidden = !link;
+    els.reissueLink.textContent = link;
+    els.reissueLink.href = link || "#";
     els.reissueOverlay.classList.add("is-open");
     if (data.warning) showToast(data.warning, true);
   }
@@ -607,6 +627,20 @@
     } catch (e) {
       showToast("Не удалось скопировать: " + e.message, true);
     }
+  });
+
+  async function copyText(text, okMessage) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(okMessage, false);
+    } catch (e) {
+      showToast("Не удалось скопировать: " + e.message, true);
+    }
+  }
+
+  els.reissueLinkCopy.addEventListener("click", () => {
+    const link = els.reissueLink.textContent;
+    if (link) copyText(link, "Ссылка скопирована");
   });
 
   function closeReissue() {

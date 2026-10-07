@@ -8,16 +8,18 @@ package main
 // скачиванием файла и QR-кодом.
 //
 // Приватных ключей клиентов панель не хранит, поэтому раздаётся только то,
-// что лежит файлом <имя>.conf в cfg.PublicConfDir (его кладут туда при
-// заведении клиента). Нет файла или он старше cfg.PublicConfDays дней — 404,
-// такой же, как на любой несуществующий адрес. Выключить раздачу целиком —
-// удалить каталог.
+// что лежит файлом <имя>.conf в cfg.PublicConfDir. С v2.6 файл кладёт сама
+// панель при добавлении клиента и перевыпуске ключей и убирает после первого
+// подключения (public_conf_auto.go). Нет файла (или задан cfg.PublicConfDays
+// и файл старше) — 404, такой же, как на любой несуществующий адрес.
+// Выключить раздачу целиком — public_conf_dir: "".
 
 import (
 	"bytes"
 	"compress/zlib"
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -31,8 +33,6 @@ import (
 
 	"awg-web/internal/config"
 )
-
-const defaultPublicConfDays = 14
 
 // Имя в ссылке — только то, что безопасно как имя файла: никаких точек и
 // слешей, значит и выхода из каталога через ../ быть не может.
@@ -54,15 +54,10 @@ func amneziaKey(conf string) string {
 	return "vpn://" + base64.RawURLEncoding.EncodeToString(buf.Bytes())
 }
 
-func publicConfDays(cfg config.Config) int {
-	if cfg.PublicConfDays > 0 {
-		return cfg.PublicConfDays
-	}
-	return defaultPublicConfDays
-}
-
 // loadPublicConf читает <имя>.conf из каталога раздачи. ok=false — нет
-// каталога/файла, имя недопустимо или срок ссылки вышел.
+// каталога/файла, имя недопустимо или срок ссылки вышел. expires нулевой,
+// если срока нет (cfg.PublicConfDays = 0): страница живёт до первого
+// подключения клиента.
 func loadPublicConf(cfg config.Config, name string, now time.Time) (text string, expires time.Time, ok bool) {
 	if cfg.PublicConfDir == "" || !publicConfNameRe.MatchString(name) {
 		return "", time.Time{}, false
@@ -72,9 +67,11 @@ func loadPublicConf(cfg config.Config, name string, now time.Time) (text string,
 	if err != nil || !fi.Mode().IsRegular() {
 		return "", time.Time{}, false
 	}
-	expires = fi.ModTime().Add(time.Duration(publicConfDays(cfg)) * 24 * time.Hour)
-	if !now.Before(expires) {
-		return "", time.Time{}, false
+	if cfg.PublicConfDays > 0 {
+		expires = fi.ModTime().Add(time.Duration(cfg.PublicConfDays) * 24 * time.Hour)
+		if !now.Before(expires) {
+			return "", time.Time{}, false
+		}
 	}
 	data, err := os.ReadFile(p)
 	if err != nil || len(data) == 0 {
@@ -118,6 +115,10 @@ func registerPublicConf(r *gin.Engine, cfg config.Config) {
 			return
 		}
 		log.Printf("conf: страница %s открыта с %s", name, c.Request.RemoteAddr)
+		until := ""
+		if !expires.IsZero() {
+			until = expires.Format("02.01.2006")
+		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		err := tmpl.Execute(c.Writer, gin.H{
 			"Name":    name,
@@ -125,7 +126,7 @@ func registerPublicConf(r *gin.Engine, cfg config.Config) {
 			"Conf":    text,
 			"Key":     template.URL(amneziaKey(text)), // иначе html/template заменит схему vpn: на #ZgotmplZ
 			"KeyText": amneziaKey(text),
-			"Until":   expires.Format("02.01.2006"),
+			"Until":   until,
 		})
 		if err != nil {
 			log.Printf("conf: не удалось отрендерить страницу %s: %v", name, err)
@@ -163,9 +164,11 @@ func registerPublicConf(r *gin.Engine, cfg config.Config) {
 		c.Data(http.StatusOK, "image/png", png)
 	})
 
-	state := "каталога нет — ссылки не работают"
-	if fi, err := os.Stat(cfg.PublicConfDir); err == nil && fi.IsDir() {
-		state = "каталог есть"
+	publicConfEnabled = true
+	go publicConfLoop(cfg)
+	limit := "до первого подключения клиента"
+	if cfg.PublicConfDays > 0 {
+		limit += fmt.Sprintf(", но не дольше %d дн.", cfg.PublicConfDays)
 	}
-	log.Printf("раздача конфигов по ссылке /conf/<имя> из %s, срок %d дн. (%s)", cfg.PublicConfDir, publicConfDays(cfg), state)
+	log.Printf("раздача конфигов по ссылке /conf/<имя> из %s: страницы создаются при добавлении/перевыпуске и живут %s", cfg.PublicConfDir, limit)
 }
