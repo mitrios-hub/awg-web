@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/curve25519"
@@ -39,20 +40,24 @@ func TestPubFromConf(t *testing.T) {
 }
 
 func TestPublicConfSlug(t *testing.T) {
-	cases := map[[2]string]string{
-		{"nl-arthur0", "10.8.2.7"}:  "nl-arthur0",
-		{"Вера", "10.8.2.10"}:       "client-10-8-2-10",
-		{"anna phone", "10.8.2.11"}: "anna_phone-10-8-2-11",
-		{"tv (зал)", "10.8.2.12"}:   "tv-10-8-2-12",
+	cases := map[string]string{
+		"nl-arthur0":            "nl-arthur0-",
+		"Вера":                  "client-",
+		"anna phone":            "anna_phone-",
+		"tv (зал)":              "tv-",
+		strings.Repeat("x", 80): strings.Repeat("x", 55) + "-",
 	}
-	for in, want := range cases {
-		got := publicConfSlug(in[0], in[1])
-		if got != want {
-			t.Errorf("publicConfSlug(%q, %q) = %q, ждали %q", in[0], in[1], got, want)
+	for in, prefix := range cases {
+		got := publicConfSlug(in)
+		if !strings.HasPrefix(got, prefix) || len(got) != len(prefix)+slugTailLen {
+			t.Errorf("publicConfSlug(%q) = %q, ждали %q + %d случайных", in, got, prefix, slugTailLen)
 		}
 		if !publicConfNameRe.MatchString(got) {
 			t.Errorf("%q не годится для ссылки", got)
 		}
+	}
+	if publicConfSlug("nl-a0") == publicConfSlug("nl-a0") {
+		t.Errorf("хвост не случайный")
 	}
 }
 
@@ -61,66 +66,61 @@ func TestPublicConfLifecycle(t *testing.T) {
 	cfg := config.Config{PublicConfDir: filepath.Join(dir, "pc")} // каталога ещё нет
 	publicConfEnabled = true
 	defer func() { publicConfEnabled = false }()
-	exists := func(slug string) bool {
-		_, err := os.Stat(filepath.Join(cfg.PublicConfDir, slug+".conf"))
+	exists := func(path string) bool {
+		_, err := os.Stat(filepath.Join(cfg.PublicConfDir, strings.TrimPrefix(path, "/conf/")+".conf"))
 		return err == nil
 	}
 
-	// добавление: страница появляется, каталог создаётся с правами только владельца
+	// добавление: страница появляется (каталог создаётся сам), в ссылке имя + хвост
 	conf1, pub1 := testKeyConf(t)
-	path, err := publishClientConf(cfg, "nl-ksu0", "10.8.2.8", "", pub1, conf1)
-	if err != nil || path != "/conf/nl-ksu0" || !exists("nl-ksu0") {
-		t.Fatalf("добавление: %q, %v", path, err)
+	path1, err := publishClientConf(cfg, "nl-ksu0", "10.8.2.8", "", pub1, conf1)
+	if err != nil || !strings.HasPrefix(path1, "/conf/nl-ksu0-") || !exists(path1) {
+		t.Fatalf("добавление: %q, %v", path1, err)
 	}
 
-	// второй клиент с тем же именем не затирает первого
+	// второй клиент с тем же именем получает свою ссылку
 	conf2, pub2 := testKeyConf(t)
 	path2, _ := publishClientConf(cfg, "nl-ksu0", "10.8.2.9", "", pub2, conf2)
-	if path2 != "/conf/nl-ksu0-10-8-2-9" || !exists("nl-ksu0") {
-		t.Fatalf("тёзка: %q", path2)
-	}
-
-	// переименование переносит ожидающую страницу
-	renameClientConf(cfg, pub1, "nl-ksenia0", "10.8.2.8")
-	if exists("nl-ksu0") || !exists("nl-ksenia0") {
-		t.Fatalf("переименование не перенесло страницу")
+	if path2 == path1 || !exists(path1) || !exists(path2) {
+		t.Fatalf("тёзка: %q и %q", path1, path2)
 	}
 
 	// перевыпуск: старая страница уходит, новая — с новым ключом
 	conf3, pub3 := testKeyConf(t)
-	if _, err := publishClientConf(cfg, "nl-ksenia0", "10.8.2.8", pub1, pub3, conf3); err != nil {
-		t.Fatal(err)
+	path3, err := publishClientConf(cfg, "nl-ksu0", "10.8.2.8", pub1, pub3, conf3)
+	if err != nil || exists(path1) || !exists(path3) {
+		t.Fatalf("перевыпуск: старая %v, новая %v, %v", exists(path1), exists(path3), err)
 	}
-	if got := publicConfFiles(cfg.PublicConfDir)["nl-ksenia0"]; got != pub3 {
-		t.Fatalf("после перевыпуска на странице ключ %q, ждали новый", got)
+	if got := publicConfPathsByPub(cfg)[pub3]; got != path3 {
+		t.Fatalf("publicConfPathsByPub = %q, ждали %q", got, path3)
 	}
 
 	// проверка handshakes: пустой ответ ничего не трогает
 	prunePublicConfs(cfg, map[string]int64{})
-	if !exists("nl-ksenia0") || !exists("nl-ksu0-10-8-2-9") {
+	if !exists(path3) || !exists(path2) {
 		t.Fatalf("пустой список пиров удалил страницы")
 	}
 	// ещё не подключались — страницы на месте
 	prunePublicConfs(cfg, map[string]int64{pub3: 0, pub2: 0})
-	if !exists("nl-ksenia0") || !exists("nl-ksu0-10-8-2-9") {
+	if !exists(path3) || !exists(path2) {
 		t.Fatalf("удалено до подключения")
 	}
 	// первый handshake — страница исчезает, у второго остаётся
 	prunePublicConfs(cfg, map[string]int64{pub3: 1791400000, pub2: 0})
-	if exists("nl-ksenia0") || !exists("nl-ksu0-10-8-2-9") {
-		t.Fatalf("после подключения: ksenia %v, тёзка %v", exists("nl-ksenia0"), exists("nl-ksu0-10-8-2-9"))
+	if exists(path3) || !exists(path2) {
+		t.Fatalf("после подключения: подключившийся %v, тёзка %v", exists(path3), exists(path2))
 	}
 	// клиента удалили на сервере мимо панели — страница тоже уходит
 	prunePublicConfs(cfg, map[string]int64{pub3: 1791400000})
-	if exists("nl-ksu0-10-8-2-9") {
+	if exists(path2) {
 		t.Fatalf("страница удалённого клиента осталась")
 	}
 
 	// удаление клиента из панели
 	conf4, pub4 := testKeyConf(t)
-	publishClientConf(cfg, "nl-tmp0", "10.8.2.20", "", pub4, conf4)
+	path4, _ := publishClientConf(cfg, "nl-tmp0", "10.8.2.20", "", pub4, conf4)
 	dropClientConf(cfg, pub4)
-	if exists("nl-tmp0") {
+	if exists(path4) {
 		t.Fatalf("страница удалённого клиента осталась")
 	}
 }

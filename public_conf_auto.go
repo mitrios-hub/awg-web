@@ -3,12 +3,14 @@ package main
 // Автоматические страницы /conf/<имя> (v2.6). При добавлении клиента и при
 // перевыпуске его ключей панель сама кладёт <имя>.conf в cfg.PublicConfDir,
 // а publicConfLoop удаляет файл, как только у клиента прошёл первый
-// handshake: ссылка живёт ровно до первого подключения. Принадлежность файла
+// handshake: ссылка живёт ровно до первого подключения. При переименовании
+// клиента страница не переезжает — уже отправленная ссылка продолжает работать. Принадлежность файла
 // клиенту определяется по самому конфигу — публичный ключ выводится из его
 // PrivateKey, поэтому никаких отдельных индексов не нужно и файлы,
 // положенные руками (как первые ссылки на nl1), обрабатываются так же.
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -49,24 +51,35 @@ func pubFromConf(conf string) (string, bool) {
 	return base64.StdEncoding.EncodeToString(pub), true
 }
 
-// publicConfSlug — имя для ссылки. Латинское имя без пробелов идёт как есть;
-// из остальных (кириллица, пробелы, скобки) остаётся безопасная часть плюс
-// IP через дефисы — чтобы ссылки разных клиентов не совпали.
-func publicConfSlug(name, ip string) string {
-	if publicConfNameRe.MatchString(name) {
-		return name
-	}
-	base := unsafeFilenameRe.ReplaceAllString(name, "_")
-	base = strings.Trim(base, "_")
+const (
+	slugTailLen      = 8
+	slugTailAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+)
+
+// publicConfSlug — имя для ссылки: имя клиента и случайный хвост
+// (nl-arthur0-k7f3q2xm). Хвост не даёт угадать ссылку по имени — на странице
+// рабочий конфиг. Из кириллицы, пробелов и скобок остаётся безопасная часть
+// (или «client»), длина — в пределах publicConfNameRe.
+func publicConfSlug(name string) string {
+	base := strings.Trim(unsafeFilenameRe.ReplaceAllString(name, "_"), "_-")
 	if base == "" {
 		base = "client"
 	}
-	slug := base + "-" + strings.ReplaceAll(ip, ".", "-")
-	if len(slug) > 64 {
-		slug = slug[len(slug)-64:]
-		slug = strings.TrimLeft(slug, "_-")
+	if lim := 64 - 1 - slugTailLen; len(base) > lim {
+		base = strings.TrimRight(base[:lim], "_-")
 	}
-	return slug
+	return base + "-" + randomTail()
+}
+
+func randomTail() string {
+	b := make([]byte, slugTailLen)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand: " + err.Error()) // без случайности ссылку выдавать нельзя
+	}
+	for i := range b {
+		b[i] = slugTailAlphabet[int(b[i])%len(slugTailAlphabet)]
+	}
+	return string(b)
 }
 
 // publicConfFiles — имя ссылки → публичный ключ для всех файлов каталога.
@@ -138,11 +151,7 @@ func publishClientConf(cfg config.Config, name, ip, oldPub, pub, conf string) (s
 	}
 	removePublicConfLocked(dir, pub)
 
-	slug := publicConfSlug(name, ip)
-	if _, err := os.Stat(filepath.Join(dir, slug+".conf")); err == nil {
-		// под этим именем уже ждёт подключения другой клиент (имена не уникальны)
-		slug = publicConfSlug(slug+" ", ip)
-	}
+	slug := publicConfSlug(name)
 	tmp := filepath.Join(dir, "."+slug+".tmp")
 	if err := os.WriteFile(tmp, []byte(conf), 0o600); err != nil {
 		os.Remove(tmp)
@@ -165,32 +174,6 @@ func dropClientConf(cfg config.Config, pub string) {
 	defer publicConfMu.Unlock()
 	for _, slug := range removePublicConfLocked(cfg.PublicConfDir, pub) {
 		log.Printf("conf: страница /conf/%s удалена вместе с клиентом", slug)
-	}
-}
-
-// renameClientConf переносит ожидающую страницу под новое имя клиента.
-func renameClientConf(cfg config.Config, pub, name, ip string) {
-	if cfg.PublicConfDir == "" || pub == "" {
-		return
-	}
-	publicConfMu.Lock()
-	defer publicConfMu.Unlock()
-	dir := cfg.PublicConfDir
-	for slug, p := range publicConfFiles(dir) {
-		if p != pub {
-			continue
-		}
-		newSlug := publicConfSlug(name, ip)
-		if newSlug == slug {
-			return
-		}
-		if _, err := os.Stat(filepath.Join(dir, newSlug+".conf")); err == nil {
-			newSlug = publicConfSlug(newSlug+" ", ip)
-		}
-		if err := os.Rename(filepath.Join(dir, slug+".conf"), filepath.Join(dir, newSlug+".conf")); err == nil {
-			log.Printf("conf: страница /conf/%s переименована в /conf/%s", slug, newSlug)
-		}
-		return
 	}
 }
 

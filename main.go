@@ -1509,11 +1509,7 @@ func renameClient(cfg config.Config, ip, name string) error {
 	if err != nil {
 		return fmt.Errorf("не удалось сериализовать clientsTable: %w", err)
 	}
-	if err := dockerWriteFile(cfg.Container, cfg.ClientsTablePath, string(data)); err != nil {
-		return err
-	}
-	renameClientConf(cfg, peer.PublicKey, name, ip)
-	return nil
+	return dockerWriteFile(cfg.Container, cfg.ClientsTablePath, string(data))
 }
 
 // removePeerByIP убирает из текста wg0.conf блок [Peer], чей AllowedIPs
