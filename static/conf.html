@@ -84,9 +84,9 @@
       Google Play</a>
   </div>
 
-  <p class="inapp" id="inappNote" hidden>Страница открыта во встроенном браузере (например, Telegram) — из него
-    AmneziaVPN не откроется. Нажмите <b>⋮</b> вверху → <b>«Открыть в браузере»</b>. Или скопируйте ключ ниже
-    и вставьте его в&nbsp;приложении.</p>
+  <p class="inapp" id="inappNote" hidden>Страница открыта во встроенном браузере (например, Telegram).
+    Если <b>«Открыть в AmneziaVPN»</b> не сработает — скопируйте ключ и вставьте его в приложении
+    или откройте эту страницу в обычном браузере (меню <b>⋮</b>&nbsp;вверху).</p>
   <div class="actions">
     <a class="btn primary only-android" id="openApp" href="{{.Key}}">Открыть в AmneziaVPN</a>
     <button class="btn primary" id="shareBtn" type="button" hidden>Поделиться → AmneziaVPN</button>
@@ -135,30 +135,52 @@
   var android = /Android/i.test(ua);
   document.documentElement.className = ios ? "os-ios" : android ? "os-android" : "os-desktop";
 
-  // Встроенный браузер приложений (Telegram и др.) на Android — это WebView
-  // («; wv)» в User-Agent): ссылку vpn:// он до AmneziaVPN не доносит. Вместо
-  // кнопки «Открыть» — подсказка и ключ для вставки.
-  if (android && (/; wv\)/.test(ua) || /Telegram/i.test(ua))) {
-    document.getElementById("inappNote").hidden = false;
-    document.getElementById("openApp").style.display = "none";
-    document.getElementById("copyBtn").classList.add("primary");
-    document.querySelector(".steps.only-android").style.display = "none"; // там про кнопку «Открыть»
-  }
-
   var name = {{.Name}};
   var conf = document.getElementById("confText").textContent;
   var key = document.getElementById("keyText").textContent;
+
+  // Встроенный браузер Telegram (и других приложений) на Android — WebView.
+  // Telegram, отдавая ссылку vpn://<ключ> другому приложению, переводит её
+  // «хост» — то есть сам ключ — в нижний регистр (Browser.openInExternalApp),
+  // и ключ ломается. Ссылку intent: он передаёт системе как есть, поэтому там
+  // ключ уходит текстом, как через «Поделиться»: ImportConfigActivity
+  // AmneziaVPN принимает SEND text/plain и импортирует его.
+  // Признаки WebView: «; wv)» в UA; бренд «Android WebView» в UA-CH; у
+  // Telegram — «; K)» с настоящей версией Android (Chrome всегда пишет «10»).
+  function inAppBrowser() {
+    if (/; wv\)/.test(ua) || /Telegram/i.test(ua)) return true;
+    try {
+      var brands = (navigator.userAgentData && navigator.userAgentData.brands) || [];
+      for (var i = 0; i < brands.length; i++) if (/WebView/i.test(brands[i].brand)) return true;
+    } catch (e) {}
+    return /\(Linux; Android [\d.]+; K\)/.test(ua) && !/Android 10; K\)/.test(ua);
+  }
+  if (android && inAppBrowser()) {
+    document.getElementById("inappNote").hidden = false;
+    document.getElementById("openApp").href =
+      "intent:#Intent;action=android.intent.action.SEND;type=text/plain;" +
+      "component=org.amnezia.vpn/.ImportConfigActivity;" +
+      "S.android.intent.extra.TEXT=" + encodeURIComponent(key) + ";" +
+      "S.browser_fallback_url=" + encodeURIComponent("https://play.google.com/store/apps/details?id=org.amnezia.vpn") + ";end";
+  }
   var msg = document.getElementById("msg");
   function say(text, ok) { msg.textContent = text; msg.className = "msg " + (ok ? "ok" : "err"); }
 
-  // «Поделиться» файлом — главный путь на iPhone: у AmneziaVPN там нет своей
-  // схемы ссылок, зато она принимает .conf из системного меню.
+  // «Поделиться»: на iPhone — файлом .conf (главный путь: у AmneziaVPN там
+  // нет своей схемы ссылок, зато она принимает .conf из системного меню). На
+  // Android — ключом-текстом: файл браузер отдаёт как text/plain, а AmneziaVPN
+  // для text/plain читает не файл, а текст сообщения — и получала адрес
+  // страницы вместо конфига.
   var shareBtn = document.getElementById("shareBtn");
-  var file = null;
-  try { file = new File([conf], name + ".conf", { type: "text/plain" }); } catch (e) {}
+  var shareData = null;
+  if (ios) {
+    try { shareData = { files: [new File([conf], name + ".conf", { type: "text/plain" })] }; } catch (e) {}
+  } else if (android) {
+    shareData = { text: key };
+  }
   var canShare = false;
-  try { canShare = !!(file && navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) {}
-  if (canShare && (ios || android)) {
+  try { canShare = !!(shareData && navigator.share && (!navigator.canShare || navigator.canShare(shareData))); } catch (e) {}
+  if (canShare) {
     shareBtn.hidden = false;
     if (android) shareBtn.classList.remove("primary");
   } else if (ios) {
@@ -166,7 +188,7 @@
       "Нажмите <b>«Скачать файл .conf»</b>, откройте его в «Файлах» → «Поделиться» → <b>AmneziaVPN</b>.";
   }
   shareBtn.addEventListener("click", function () {
-    navigator.share({ files: [file] }).catch(function (e) {
+    navigator.share(shareData).catch(function (e) {
       if (e && e.name !== "AbortError") say("Не получилось поделиться — скачайте файл или скопируйте ключ.", false);
     });
   });
