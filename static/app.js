@@ -24,6 +24,7 @@
     reissue: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M4 10a6 6 0 0 1 10.2-4.3M16 10a6 6 0 0 1-10.2 4.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 3v3h-3M6 17v-3h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     delete: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M6 6l8 8M14 6l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
     link: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M8.5 11.5a3 3 0 0 0 4.2 0l2.6-2.6a3 3 0 0 0-4.2-4.2l-1 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M11.5 8.5a3 3 0 0 0-4.2 0l-2.6 2.6a3 3 0 0 0 4.2 4.2l1-1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    linkOff: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M8.5 11.5a3 3 0 0 0 4.2 0l2.6-2.6a3 3 0 0 0-4.2-4.2l-1 1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M11.5 8.5a3 3 0 0 0-4.2 0l-2.6 2.6a3 3 0 0 0 4.2 4.2l1-1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M3.5 3.5l13 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
     pencil: '<svg class="icon" viewBox="0 0 20 20" fill="none"><path d="M4 16h3l8.5-8.5a1.5 1.5 0 0 0 0-2.1l-.9-.9a1.5 1.5 0 0 0-2.1 0L4 13v3Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M11.5 5.5l3 3" stroke="currentColor" stroke-width="1.6"/></svg>',
   };
 
@@ -168,17 +169,62 @@
       '<span class="status-dot status-dot--active' + live + '"></span>Активен</span>';
   }
 
+  // Кнопка страницы /conf/<имя>: зелёная ссылка — страница открыта (ждёт
+  // первого подключения или включена вручную), красная перечёркнутая —
+  // выключена (клиент уже подключался). Нажатие переключает; при включении
+  // ссылка сразу копируется.
+  function pageButtonHtml(u, dataAttr) {
+    if (!u.publicPath) {
+      return '<span class="row-slot" aria-hidden="true"></span>'; // место держим, чтобы кнопки в строках стояли ровно
+    }
+    const off = u.publicState === "off";
+    const title = off
+      ? "Страница с конфигом выключена (клиент уже подключался). Нажмите, чтобы включить и скопировать ссылку"
+      : (u.publicState === "on" ? "Страница с конфигом включена вручную" : "Страница с конфигом ждёт первого подключения") +
+        ". Нажмите, чтобы выключить";
+    return '<button class="btn btn--row btn--icon ' + (off ? "btn--row-link-off" : "btn--row-link") +
+      '" data-action="' + (off ? "pageon" : "pageoff") + '"' + dataAttr +
+      ' data-path="' + escapeHtml(u.publicPath) + '" title="' + title + '" aria-label="' +
+      (off ? "Включить страницу" : "Выключить страницу") + '">' + (off ? ICONS.linkOff : ICONS.link) + "</button>";
+  }
+
+  async function setPage(path, enabled, name) {
+    const link = location.origin + path;
+    // копируем сразу по нажатию: после ответа сервера браузер может уже не
+    // считать это действием пользователя и не дать доступ к буферу
+    const copied = enabled && navigator.clipboard
+      ? navigator.clipboard.writeText(link).then(() => true, () => false)
+      : Promise.resolve(false);
+    try {
+      const res = await fetch("/api" + path, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      const u = state.users.find((x) => x.publicPath === path);
+      if (u) u.publicState = data.publicState;
+      render();
+      if (enabled) {
+        showToast((await copied)
+          ? "Страница «" + name + "» включена, ссылка скопирована"
+          : "Страница «" + name + "» включена: " + link, false);
+      } else {
+        showToast("Страница «" + name + "» выключена", false);
+      }
+    } catch (e) {
+      showToast("Не удалось переключить страницу: " + e.message, true);
+    }
+  }
+
   function actionCellHtml(u) {
     const dataAttr = ' data-ip="' + u.ip + '" data-client-id="' + escapeHtml(u.clientId || "") +
       '" data-name="' + escapeHtml(u.name) + '"';
     const del = '<button class="btn btn--row btn--icon btn--row-delete" data-action="delete"' + dataAttr +
       ' title="Удалить" aria-label="Удалить">' + ICONS.delete + "</button>" +
-      // страница /conf/<имя> ждёт первого подключения — ссылку можно скопировать
-      (u.publicPath
-        ? '<button class="btn btn--row btn--icon btn--row-link" data-action="copylink"' + dataAttr + ' data-path="' +
-          escapeHtml(u.publicPath) + '" title="Скопировать ссылку на страницу с конфигом" ' +
-          'aria-label="Скопировать ссылку">' + ICONS.link + "</button>"
-        : '<span class="row-slot" aria-hidden="true"></span>'); // место держим, чтобы кнопки в строках стояли ровно
+      pageButtonHtml(u, dataAttr);
     // без IP блок/разблок/перевыпуск невозможны (нет с чем сопоставить пира) —
     // для таких битых записей доступно только удаление
     if (!u.ip) {
@@ -254,7 +300,7 @@
     // Статус и кнопки перестраиваем только при смене блокировки или
     // появлении/исчезновении страницы со ссылкой — тяжёлую часть (иконки)
     // не трогаем каждую секунду.
-    const pub = u.publicPath || "";
+    const pub = (u.publicPath || "") + "|" + (u.publicState || "");
     if (init || e.vBlocked !== u.blocked || e.vPublic !== pub) {
       e.cStatus.innerHTML = statusPillHtml(u);
       e.cAction.innerHTML = actionCellHtml(u);
@@ -422,8 +468,8 @@
     const clientId = btn.dataset.clientId;
     const name = btn.dataset.name;
 
-    if (action === "copylink") {
-      copyText(location.origin + btn.dataset.path, "Ссылка для «" + name + "» скопирована");
+    if (action === "pageon" || action === "pageoff") {
+      setPage(btn.dataset.path, action === "pageon", name);
     } else if (action === "block") {
       openConfirm(
         "Отключить пользователя",

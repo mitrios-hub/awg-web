@@ -191,6 +191,8 @@ body {
 .btn--row-delete:hover { background: var(--red); border-color: var(--red); color: #1a0708; }
 .btn--row-link { color: var(--teal); border-color: var(--teal); }
 .btn--row-link:hover { background: rgba(53, 208, 186, 0.12); }
+.btn--row-link-off { color: var(--red); border-color: var(--red-dim); }
+.btn--row-link-off:hover { background: rgba(242, 84, 91, 0.1); }
 
 /* компактные кнопки-иконки в строках таблицы */
 .btn--icon { padding: 6px; gap: 0; }

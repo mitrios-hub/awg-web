@@ -62,9 +62,18 @@ func loadPublicConf(cfg config.Config, name string, now time.Time) (text string,
 	if cfg.PublicConfDir == "" || !publicConfNameRe.MatchString(name) {
 		return "", time.Time{}, false
 	}
-	p := filepath.Join(cfg.PublicConfDir, name+".conf")
-	fi, err := os.Stat(p)
-	if err != nil || !fi.Mode().IsRegular() {
+	// открыта страница в двух состояниях: ждёт первого подключения (.conf)
+	// или включена админом вручную (.on); выключенная (.off) — 404
+	var p string
+	var fi os.FileInfo
+	for _, ext := range []string{pageExtPending, pageExtOn} {
+		p = filepath.Join(cfg.PublicConfDir, name+ext)
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
+			fi = st
+			break
+		}
+	}
+	if fi == nil {
 		return "", time.Time{}, false
 	}
 	if cfg.PublicConfDays > 0 {

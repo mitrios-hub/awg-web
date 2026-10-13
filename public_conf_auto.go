@@ -1,17 +1,27 @@
 package main
 
-// Автоматические страницы /conf/<имя> (v2.6). При добавлении клиента и при
-// перевыпуске его ключей панель сама кладёт <имя>.conf в cfg.PublicConfDir,
-// а publicConfLoop удаляет файл, как только у клиента прошёл первый
-// handshake: ссылка живёт ровно до первого подключения. При переименовании
-// клиента страница не переезжает — уже отправленная ссылка продолжает работать. Принадлежность файла
-// клиенту определяется по самому конфигу — публичный ключ выводится из его
-// PrivateKey, поэтому никаких отдельных индексов не нужно и файлы,
-// положенные руками (как первые ссылки на nl1), обрабатываются так же.
+// Автоматические страницы /conf/<имя>. При добавлении клиента и при
+// перевыпуске его ключей панель сама кладёт конфиг в cfg.PublicConfDir.
+// Состояние страницы — расширение файла:
+//
+//	<имя>.conf — ждёт первого подключения (страница открыта);
+//	<имя>.off  — выключена (404): так её делает publicConfLoop после первого
+//	             handshake клиента (v2.8; до этого файл удалялся) или админ;
+//	<имя>.on   — включена админом вручную, панель её сама больше не трогает.
+//
+// Выключенная страница остаётся с той же ссылкой: если клиент потеряет
+// конфиг, админ включит её кнопкой в панели, отправит ссылку и выключит.
+// Перевыпуск ключей заменяет страницу новой (новая ссылка, снова «ждёт
+// подключения»), удаление клиента — убирает. При переименовании клиента
+// страница не переезжает — уже отправленная ссылка продолжает работать.
+// Принадлежность файла клиенту определяется по самому конфигу — публичный
+// ключ выводится из его PrivateKey, поэтому отдельных индексов не нужно и
+// файлы, положенные руками, обрабатываются так же.
 
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -28,12 +38,37 @@ import (
 
 const publicConfCheckEvery = 20 * time.Second
 
+const (
+	pageExtPending = ".conf"
+	pageExtOn      = ".on"
+	pageExtOff     = ".off"
+)
+
+// Состояния страницы для API/интерфейса.
+const (
+	PageStatePending = "pending"
+	PageStateOn      = "on"
+	PageStateOff     = "off"
+)
+
+var pageStateByExt = map[string]string{
+	pageExtPending: PageStatePending,
+	pageExtOn:      PageStateOn,
+	pageExtOff:     PageStateOff,
+}
+
+var pageExtByState = map[string]string{
+	PageStatePending: pageExtPending,
+	PageStateOn:      pageExtOn,
+	PageStateOff:     pageExtOff,
+}
+
 var (
 	// publicConfEnabled — маршруты /conf/ зарегистрированы (есть шаблон и
 	// каталог не отключён); без них класть файлы бессмысленно.
 	publicConfEnabled bool
 	// publicConfMu сериализует работу с каталогом: добавление/перевыпуск из
-	// API и фоновая чистка не должны пересекаться.
+	// API и фоновая проверка не должны пересекаться.
 	publicConfMu sync.Mutex
 )
 
@@ -82,17 +117,31 @@ func randomTail() string {
 	return string(b)
 }
 
-// publicConfFiles — имя ссылки → публичный ключ для всех файлов каталога.
-// Файлы, из которых ключ не вывести, пропускаются (их не трогаем).
-func publicConfFiles(dir string) map[string]string {
-	res := map[string]string{}
+// publicPage — файл страницы в каталоге раздачи.
+type publicPage struct {
+	Slug  string
+	Pub   string
+	State string // PageState*
+}
+
+func (p publicPage) file(dir string) string {
+	return filepath.Join(dir, p.Slug+pageExtByState[p.State])
+}
+
+// publicConfFiles — все страницы каталога в любом состоянии. Файлы, из
+// которых ключ не вывести, пропускаются (их не трогаем).
+func publicConfFiles(dir string) []publicPage {
+	var res []publicPage
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return res
 	}
 	for _, e := range entries {
 		n := e.Name()
-		if !e.Type().IsRegular() || !strings.HasSuffix(n, ".conf") {
+		ext := filepath.Ext(n)
+		state, known := pageStateByExt[ext]
+		slug := strings.TrimSuffix(n, ext)
+		if !e.Type().IsRegular() || !known || !publicConfNameRe.MatchString(slug) {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, n))
@@ -100,32 +149,38 @@ func publicConfFiles(dir string) map[string]string {
 			continue
 		}
 		if pub, ok := pubFromConf(string(data)); ok {
-			res[strings.TrimSuffix(n, ".conf")] = pub
+			res = append(res, publicPage{Slug: slug, Pub: pub, State: state})
 		}
 	}
 	return res
 }
 
-// publicConfPathsByPub — публичный ключ → путь ожидающей страницы, для
-// кнопки «скопировать ссылку» в списке клиентов.
-func publicConfPathsByPub(cfg config.Config) map[string]string {
-	res := map[string]string{}
+// PublicPageInfo — страница клиента для списка в панели.
+type PublicPageInfo struct {
+	Path  string `json:"publicPath"`
+	State string `json:"publicState"`
+}
+
+// publicConfPathsByPub — публичный ключ → его страница, для кнопки ссылки в
+// списке клиентов.
+func publicConfPathsByPub(cfg config.Config) map[string]PublicPageInfo {
+	res := map[string]PublicPageInfo{}
 	if !publicConfEnabled {
 		return res
 	}
 	publicConfMu.Lock()
 	defer publicConfMu.Unlock()
-	for slug, pub := range publicConfFiles(cfg.PublicConfDir) {
-		res[pub] = "/conf/" + slug
+	for _, p := range publicConfFiles(cfg.PublicConfDir) {
+		res[p.Pub] = PublicPageInfo{Path: "/conf/" + p.Slug, State: p.State}
 	}
 	return res
 }
 
 func removePublicConfLocked(dir, pub string) []string {
 	var removed []string
-	for slug, p := range publicConfFiles(dir) {
-		if p == pub && os.Remove(filepath.Join(dir, slug+".conf")) == nil {
-			removed = append(removed, slug)
+	for _, p := range publicConfFiles(dir) {
+		if p.Pub == pub && os.Remove(p.file(dir)) == nil {
+			removed = append(removed, p.Slug)
 		}
 	}
 	return removed
@@ -157,12 +212,48 @@ func publishClientConf(cfg config.Config, name, ip, oldPub, pub, conf string) (s
 		os.Remove(tmp)
 		return "", fmt.Errorf("не удалось записать конфиг для ссылки: %w", err)
 	}
-	if err := os.Rename(tmp, filepath.Join(dir, slug+".conf")); err != nil {
+	if err := os.Rename(tmp, filepath.Join(dir, slug+pageExtPending)); err != nil {
 		os.Remove(tmp)
 		return "", fmt.Errorf("не удалось записать конфиг для ссылки: %w", err)
 	}
-	log.Printf("conf: страница /conf/%s создана для %s (%s), удалится после первого подключения", slug, name, ip)
+	log.Printf("conf: страница /conf/%s создана для %s (%s), закроется после первого подключения", slug, name, ip)
 	return "/conf/" + slug, nil
+}
+
+var errPageNotFound = errors.New("страница не найдена")
+
+// setPublicConfEnabled — кнопка в панели: включить (.on) или выключить
+// (.off) страницу. Ссылка остаётся прежней. При включении время файла
+// обновляется, чтобы лимит public_conf_days считался от включения.
+func setPublicConfEnabled(cfg config.Config, slug string, enabled bool) (PublicPageInfo, error) {
+	if !publicConfEnabled || !publicConfNameRe.MatchString(slug) {
+		return PublicPageInfo{}, errPageNotFound
+	}
+	publicConfMu.Lock()
+	defer publicConfMu.Unlock()
+	dir := cfg.PublicConfDir
+	for _, p := range publicConfFiles(dir) {
+		if p.Slug != slug {
+			continue
+		}
+		next := PublicPageInfo{Path: "/conf/" + slug, State: PageStateOff}
+		if enabled {
+			next.State = PageStateOn
+		}
+		if p.State != next.State {
+			to := publicPage{Slug: slug, State: next.State}.file(dir)
+			if err := os.Rename(p.file(dir), to); err != nil {
+				return PublicPageInfo{}, fmt.Errorf("не удалось переключить страницу: %w", err)
+			}
+			if enabled {
+				now := time.Now()
+				os.Chtimes(to, now, now)
+			}
+			log.Printf("conf: страница /conf/%s %s админом", slug, map[bool]string{true: "включена", false: "выключена"}[enabled])
+		}
+		return next, nil
+	}
+	return PublicPageInfo{}, errPageNotFound
 }
 
 // dropClientConf убирает страницу клиента (при удалении клиента).
@@ -179,7 +270,7 @@ func dropClientConf(cfg config.Config, pub string) {
 
 // fetchLatestHandshakes — публичный ключ → unix-время последнего handshake
 // (0 — ещё не было). В отличие от fetchWgShow, ошибку возвращает: по пустому
-// ответу удалять страницы нельзя.
+// ответу трогать страницы нельзя.
 func fetchLatestHandshakes(cfg config.Config) (map[string]int64, error) {
 	out, err := dockerExec(cfg.Container, "wg", "show", cfg.WgInterface, "latest-handshakes")
 	if err != nil {
@@ -204,27 +295,27 @@ func parseLatestHandshakes(out string) map[string]int64 {
 	return res
 }
 
-// prunePublicConfs — одна проверка: убрать страницы подключившихся клиентов
-// и клиентов, которых на сервере больше нет.
+// prunePublicConfs — одна проверка: закрыть страницы подключившихся клиентов
+// (только ждущие подключения — включённые админом не трогаем) и удалить
+// страницы клиентов, которых на сервере больше нет.
 func prunePublicConfs(cfg config.Config, hs map[string]int64) {
 	publicConfMu.Lock()
 	defer publicConfMu.Unlock()
 	dir := cfg.PublicConfDir
-	for slug, pub := range publicConfFiles(dir) {
-		ts, known := hs[pub]
-		var why string
+	for _, p := range publicConfFiles(dir) {
+		ts, known := hs[p.Pub]
 		switch {
-		case known && ts > 0:
-			why = "клиент подключился"
+		case known && ts > 0 && p.State == PageStatePending:
+			off := publicPage{Slug: p.Slug, State: PageStateOff}.file(dir)
+			if err := os.Rename(p.file(dir), off); err == nil {
+				log.Printf("conf: страница /conf/%s выключена — клиент подключился", p.Slug)
+			}
 		case !known && len(hs) > 0:
 			// пустой список пиров — скорее интерфейс ещё поднимается, а не
 			// «все удалены»; по нему не чистим
-			why = "такого клиента на сервере больше нет"
-		default:
-			continue
-		}
-		if err := os.Remove(filepath.Join(dir, slug+".conf")); err == nil {
-			log.Printf("conf: страница /conf/%s удалена — %s", slug, why)
+			if err := os.Remove(p.file(dir)); err == nil {
+				log.Printf("conf: страница /conf/%s удалена — такого клиента на сервере больше нет", p.Slug)
+			}
 		}
 	}
 }

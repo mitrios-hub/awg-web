@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/curve25519"
 
@@ -66,10 +67,11 @@ func TestPublicConfLifecycle(t *testing.T) {
 	cfg := config.Config{PublicConfDir: filepath.Join(dir, "pc")} // каталога ещё нет
 	publicConfEnabled = true
 	defer func() { publicConfEnabled = false }()
-	exists := func(path string) bool {
-		_, err := os.Stat(filepath.Join(cfg.PublicConfDir, strings.TrimPrefix(path, "/conf/")+".conf"))
+	existsAs := func(path, ext string) bool {
+		_, err := os.Stat(filepath.Join(cfg.PublicConfDir, strings.TrimPrefix(path, "/conf/")+ext))
 		return err == nil
 	}
+	exists := func(path string) bool { return existsAs(path, ".conf") }
 
 	// добавление: страница появляется (каталог создаётся сам), в ссылке имя + хвост
 	conf1, pub1 := testKeyConf(t)
@@ -91,8 +93,8 @@ func TestPublicConfLifecycle(t *testing.T) {
 	if err != nil || exists(path1) || !exists(path3) {
 		t.Fatalf("перевыпуск: старая %v, новая %v, %v", exists(path1), exists(path3), err)
 	}
-	if got := publicConfPathsByPub(cfg)[pub3]; got != path3 {
-		t.Fatalf("publicConfPathsByPub = %q, ждали %q", got, path3)
+	if got := publicConfPathsByPub(cfg)[pub3]; got.Path != path3 || got.State != PageStatePending {
+		t.Fatalf("publicConfPathsByPub = %+v, ждали %q pending", got, path3)
 	}
 
 	// проверка handshakes: пустой ответ ничего не трогает
@@ -105,15 +107,45 @@ func TestPublicConfLifecycle(t *testing.T) {
 	if !exists(path3) || !exists(path2) {
 		t.Fatalf("удалено до подключения")
 	}
-	// первый handshake — страница исчезает, у второго остаётся
+	// первый handshake — страница выключается (файл .off, ссылка та же), у второго открыта
 	prunePublicConfs(cfg, map[string]int64{pub3: 1791400000, pub2: 0})
-	if exists(path3) || !exists(path2) {
+	if exists(path3) || !existsAs(path3, ".off") || !exists(path2) {
 		t.Fatalf("после подключения: подключившийся %v, тёзка %v", exists(path3), exists(path2))
+	}
+	if got := publicConfPathsByPub(cfg)[pub3]; got.Path != path3 || got.State != PageStateOff {
+		t.Fatalf("после подключения: %+v", got)
+	}
+	// админ включает: страница снова открыта (.on) и проверка её больше не закрывает
+	if info, err := setPublicConfEnabled(cfg, strings.TrimPrefix(path3, "/conf/"), true); err != nil || info.State != PageStateOn {
+		t.Fatalf("включение: %+v, %v", info, err)
+	}
+	prunePublicConfs(cfg, map[string]int64{pub3: 1791400100, pub2: 0})
+	if !existsAs(path3, ".on") {
+		t.Fatalf("включённую админом страницу закрыла проверка")
+	}
+	if text, _, ok := loadPublicConf(cfg, strings.TrimPrefix(path3, "/conf/"), time.Now()); !ok || text != conf3 {
+		t.Fatalf("включённая страница не отдаётся")
+	}
+	// и выключает обратно
+	if info, err := setPublicConfEnabled(cfg, strings.TrimPrefix(path3, "/conf/"), false); err != nil || info.State != PageStateOff {
+		t.Fatalf("выключение: %+v, %v", info, err)
+	}
+	if _, _, ok := loadPublicConf(cfg, strings.TrimPrefix(path3, "/conf/"), time.Now()); ok {
+		t.Fatalf("выключенная страница отдаётся")
+	}
+	if _, err := setPublicConfEnabled(cfg, "nl-nobody-xxxxxxxx", true); err != errPageNotFound {
+		t.Fatalf("несуществующая страница: %v", err)
 	}
 	// клиента удалили на сервере мимо панели — страница тоже уходит
 	prunePublicConfs(cfg, map[string]int64{pub3: 1791400000})
 	if exists(path2) {
 		t.Fatalf("страница удалённого клиента осталась")
+	}
+	// перевыпуск выключенной: старая (.off) уходит, новая снова ждёт подключения
+	conf5, pub5 := testKeyConf(t)
+	path5, _ := publishClientConf(cfg, "nl-ksu0", "10.8.2.8", pub3, pub5, conf5)
+	if existsAs(path3, ".off") || !exists(path5) {
+		t.Fatalf("перевыпуск выключенной")
 	}
 
 	// удаление клиента из панели

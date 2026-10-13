@@ -33,6 +33,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
@@ -81,13 +82,14 @@ type User struct {
 	NeverSeen      bool   `json:"neverSeen"`
 	Blocked        bool   `json:"blocked"`
 	RecentlyActive bool   `json:"recentlyActive"`
-	PublicPath     string `json:"publicPath,omitempty"` // страница /conf/<имя>, пока клиент не подключился
+	PublicPath     string `json:"publicPath,omitempty"`  // страница /conf/<имя> (есть, пока не перевыпущены ключи)
+	PublicState    string `json:"publicState,omitempty"` // pending — ждёт 1-го подключения, on/off — включена/выключена
 }
 
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "2.7"
+const AppVersion = "2.8"
 
 // hostName — имя сервера (то, что выдаёт hostname) для шапки и заголовка вкладки:
 // «nl1 - AmneziaWG v2.3». Когда открыто несколько панелей (lv, u1, nl1…), сразу
@@ -820,7 +822,8 @@ func buildUsers(cfg config.Config) (UsersResponse, error) {
 			NeverSeen:      neverSeen,
 			Blocked:        isBlocked,
 			RecentlyActive: recentlyActive,
-			PublicPath:     pagesByKey[key],
+			PublicPath:     pagesByKey[key].Path,
+			PublicState:    pagesByKey[key].State,
 		})
 	}
 
@@ -2277,6 +2280,27 @@ func main() {
 				return
 			}
 			c.JSON(http.StatusOK, resp)
+		})
+
+		// включить/выключить страницу /conf/<slug> клиента (кнопка-ссылка в строке)
+		api.POST("/conf/:slug", func(c *gin.Context) {
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			if err := c.ShouldBindJSON(&body); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "ожидается JSON {\"enabled\": true|false}"})
+				return
+			}
+			info, err := setPublicConfEnabled(cfg, c.Param("slug"), body.Enabled)
+			if errors.Is(err, errPageNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+				return
+			}
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, info)
 		})
 
 		api.POST("/clients", func(c *gin.Context) {
