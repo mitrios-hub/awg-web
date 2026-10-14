@@ -191,8 +191,20 @@ body {
 .btn--row-delete:hover { background: var(--red); border-color: var(--red); color: #1a0708; }
 .btn--row-link { color: var(--teal); border-color: var(--teal); }
 .btn--row-link:hover { background: rgba(53, 208, 186, 0.12); }
-.btn--row-link-off { color: var(--red); border-color: var(--red-dim); }
-.btn--row-link-off:hover { background: rgba(242, 84, 91, 0.1); }
+/* блок страницы /conf/: ссылка + тумблер, отделён от кнопок действий */
+.page-box { flex: none; display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; width: 68px; }
+.page-switch {
+  flex: none; position: relative; width: 32px; height: 18px; padding: 0; cursor: pointer;
+  border-radius: 9px; border: 1px solid var(--red-dim); background: rgba(242, 84, 91, 0.12);
+  transition: background .15s, border-color .15s;
+}
+.page-switch__knob {
+  position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+  background: var(--red); transition: transform .15s, background .15s;
+}
+.page-switch.is-on { border-color: var(--teal); background: rgba(53, 208, 186, 0.18); }
+.page-switch.is-on .page-switch__knob { transform: translateX(14px); background: var(--teal); }
+.page-switch:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 
 /* компактные кнопки-иконки в строках таблицы */
 .btn--icon { padding: 6px; gap: 0; }
@@ -422,7 +434,7 @@ th.is-desc .sort-btn::after { transform: rotate(180deg); }
 .peers tbody tr:hover { background: var(--row-hover); }
 
 .col-num { width: 44px; color: var(--text-dim); }
-.col-action { width: 190px; text-align: right; }
+.col-action { width: 236px; text-align: right; }
 
 .name-cell { color: var(--text); font-family: var(--font-ui); font-size: 13px; }
 .name-cell--empty .name-text { color: var(--text-dim); }
