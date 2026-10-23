@@ -367,6 +367,7 @@ body {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
   overflow: hidden;
+  overflow-x: auto; /* не хватило ширины — таблица прокручивается, а не обрезается справа */
 }
 
 table.peers {
@@ -384,7 +385,7 @@ table.peers {
   letter-spacing: 0.06em;
   color: var(--text-dim);
   font-weight: 600;
-  padding: 12px 16px;
+  padding: 12px 12px;
   border-bottom: 1px solid var(--border-soft);
   background: var(--panel-alt);
 }
@@ -398,7 +399,7 @@ table.peers {
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 12px 16px;
+  padding: 12px 12px;
   cursor: pointer;
   font: inherit;
   text-transform: inherit;
@@ -425,12 +426,15 @@ th.is-desc .sort-btn::after { transform: rotate(180deg); }
 .sort-btn:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
 
 .peers tbody td {
-  padding: 10px 16px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border-soft);
   white-space: nowrap;
   vertical-align: middle;
 }
 .peers tbody tr:last-child td { border-bottom: none; }
+/* крайние колонки — прежний отступ от рамки */
+.peers thead th:first-child, .peers tbody td:first-child { padding-left: 16px; }
+.peers thead th:last-child, .peers tbody td:last-child { padding-right: 16px; }
 .peers tbody tr:hover { background: var(--row-hover); }
 
 .col-num { width: 44px; color: var(--text-dim); }
