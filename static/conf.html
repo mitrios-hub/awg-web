@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
-<title>{{.Name}} · AmneziaVPN</title>
+<title>{{.Name}} · подключение</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
   /* Публичная страница: /static/* без входа не отдаётся, поэтому всё здесь. */
@@ -76,8 +76,7 @@
   <h1>{{.Name}}</h1>
   <p class="lead not-ios">Подойдёт любое из двух приложений — <b>AmneziaVPN</b> или <b>AmneziaWG</b>.
     Установите, если его у вас нет, и&nbsp;вернитесь&nbsp;сюда.</p>
-  <p class="lead only-ios">Нужно приложение <b>AmneziaWG</b> — установите, если его у вас нет, и вернитесь сюда.
-    <b>AmneziaVPN</b> в&nbsp;российском App&nbsp;Store&nbsp;нет.</p>
+  <p class="lead only-ios">Нужно приложение <b>AmneziaWG</b> — установите, если его у вас нет, и&nbsp;вернитесь&nbsp;сюда.</p>
   <!-- AmneziaVPN в российском App Store нет (снята с продажи в РФ, проверено
        24.10.2026) — для iPhone только AmneziaWG; появится — вернуть кнопку -->
   <div class="stores">
@@ -106,7 +105,7 @@
   <div class="actions">
     <a class="btn primary only-android" id="openApp" href="{{.Key}}">Открыть в AmneziaVPN</a>
     <button class="btn primary" id="shareBtn" type="button" hidden>Поделиться →<span class="not-ios">&nbsp;AmneziaVPN</span><span class="only-ios">&nbsp;AmneziaWG</span></button>
-    <button class="btn" id="copyBtn" type="button">Скопировать ключ</button>
+    <button class="btn not-ios" id="copyBtn" type="button">Скопировать ключ</button>
     <a class="btn" id="fileBtn" href="/conf/{{.Name}}/file" download="{{.Name}}.conf">Скачать файл .conf</a>
   </div>
   <p class="msg" id="msg" role="status" aria-live="polite"></p>
@@ -116,6 +115,7 @@
     <ol>
       <li>Нажмите <b>«Открыть в AmneziaVPN»</b> — приложение откроется и предложит добавить подключение.</li>
       <li>Если не открылось: <b>«Скопировать ключ»</b>, в AmneziaVPN добавьте сервер и вставьте ключ.</li>
+      <li>В <b>AmneziaWG</b>: <b>«Скачать файл .conf»</b>, в AmneziaWG нажмите <b>«+»</b> → импорт из&nbsp;файла и выберите его в&nbsp;«Загрузках».</li>
     </ol>
   </section>
   <section class="steps only-ios">
@@ -123,7 +123,6 @@
     <ol>
       <li id="iosShareStep">Нажмите <b>«Поделиться»</b> и выберите в списке <b>AmneziaWG</b> (если её не видно — «Ещё»).</li>
       <li>Или <b>«Скачать файл .conf»</b>, в AmneziaWG нажмите <b>«+»</b> → создать из&nbsp;файла и выберите его в&nbsp;«Загрузках».</li>
-      <li>Если у вас <b>AmneziaVPN</b>: «Поделиться» → AmneziaVPN или «Скопировать ключ» и&nbsp;вставьте его в&nbsp;приложении.</li>
     </ol>
   </section>
   <section class="steps only-desktop">
@@ -138,8 +137,8 @@
 
   <figure class="qr">
     <img src="/conf/{{.Name}}/qr.png" alt="QR-код с настройками" width="300" height="300">
-    <figcaption>Для другого устройства:<br><span class="nowrap">AmneziaVPN → добавить сервер → QR-код</span>
-      <br><span class="nowrap">AmneziaWG → «+» → QR-код</span></figcaption>
+    <figcaption>Для другого устройства:<br><span class="nowrap not-ios">AmneziaVPN → добавить сервер → QR-код</span>
+      <br class="not-ios"><span class="nowrap">AmneziaWG → «+» → QR-код</span></figcaption>
   </figure>
 
   <p class="foot">{{if .Until}}Ссылка действует до {{.Until}} или до первого&nbsp;подключения.{{else}}Ссылка закроется после первого&nbsp;подключения.{{end}}</p>
