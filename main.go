@@ -2161,6 +2161,9 @@ func main() {
 			err, *configPath,
 		)
 	}
+	if n := strings.TrimSpace(cfg.ServerName); n != "" {
+		hostName = n
+	}
 	if cfg.AuthUser == "" || cfg.AuthPassHash == "" {
 		log.Fatalf(
 			"В конфиге (%s) не заданы auth_user / auth_pass_hash.\n"+

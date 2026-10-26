@@ -73,6 +73,10 @@ type Config struct {
 	// AmneziaVPN у клиента, если он добавил его ключом со страницы /conf/ —
 	// одно на всех. Пусто — имя клиента в панели (или hostname сервера).
 	ClientConnectionName string `json:"client_connection_name,omitempty"`
+	// ServerName — имя сервера в шапке и заголовке вкладки панели. Пусто —
+	// hostname машины. Нужно, когда на одной машине несколько панелей
+	// (например, nl1 переехал на x3 рядом с панелью x3).
+	ServerName string `json:"server_name,omitempty"`
 }
 
 func DefaultConfig() Config {
