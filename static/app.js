@@ -49,6 +49,7 @@
     tableBody: document.getElementById("tableBody"),
     peersHead: document.querySelector("#peersTable thead"),
     statTotal: document.getElementById("statTotal"),
+    statOnline: document.getElementById("statOnline"),
     statActive: document.getElementById("statActive"),
     statBlocked: document.getElementById("statBlocked"),
     statNever: document.getElementById("statNever"),
@@ -408,6 +409,7 @@
   function render() {
     if (state.summary) {
       els.statTotal.textContent = state.summary.total;
+      els.statOnline.textContent = state.summary.online ?? 0;
       els.statActive.textContent = state.summary.active;
       els.statBlocked.textContent = state.summary.blocked;
       els.statNever.textContent = state.summary.neverSeen;

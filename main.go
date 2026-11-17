@@ -89,7 +89,7 @@ type User struct {
 // AppVersion — версия панели. Обновляется вручную при значимых изменениях,
 // чтобы можно было визуально свериться (в шапке панели), что деплой на
 // сервере реально подтянул актуальный код после git pull + пересборки.
-const AppVersion = "2.8"
+const AppVersion = "2.9"
 
 // hostName — имя сервера (то, что выдаёт hostname) для шапки и заголовка вкладки:
 // «nl1 - AmneziaWG v2.3». Когда открыто несколько панелей (lv, u1, nl1…), сразу
@@ -103,8 +103,13 @@ var hostName = func() string {
 	return strings.TrimSpace(h)
 }()
 
+// Summary — плитки над таблицей. Active — «активны»: пиры, которые не
+// заблокированы (доступны). Online — подмножество активных с недавним
+// handshake, т.е. кто реально подключён прямо сейчас; блокировка режет пакеты,
+// поэтому заблокированный пир в Online не попадает никогда.
 type Summary struct {
 	Total     int `json:"total"`
+	Online    int `json:"online"`
 	Active    int `json:"active"`
 	Blocked   int `json:"blocked"`
 	NeverSeen int `json:"neverSeen"`
@@ -808,6 +813,9 @@ func buildUsers(cfg config.Config) (UsersResponse, error) {
 			summary.Blocked++
 		} else {
 			summary.Active++
+			if recentlyActive {
+				summary.Online++
+			}
 		}
 
 		users = append(users, User{

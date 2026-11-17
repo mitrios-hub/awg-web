@@ -221,27 +221,30 @@ body {
 }
 
 /* ===================== СТАТ-КАРТОЧКИ ===================== */
+/* пять плиток в один ряд: всего / онлайн / активны / заблокированы / не подключались */
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-  margin-bottom: 22px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
 }
 .stat-card {
   background: var(--panel);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
-  padding: 16px 18px;
+  padding: 12px 14px;
+  min-width: 0;
 }
 .stat-card__value {
   font-family: var(--font-mono);
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 600;
   line-height: 1;
 }
 .stat-card__label {
-  margin-top: 8px;
-  font-size: 12px;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.25;
   color: var(--text-muted);
 }
 .stat-card--live .stat-card__value { color: var(--teal); }
@@ -660,11 +663,18 @@ th.is-desc .sort-btn::after { transform: rotate(180deg); }
 .reissue-box__close:hover { color: var(--text-muted); }
 
 /* ===================== АДАПТИВНОСТЬ ===================== */
+@media (max-width: 900px) {
+  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 @media (max-width: 860px) {
-  .stats { grid-template-columns: repeat(2, 1fr); }
   .topbar { padding: 14px 18px; }
   .container { padding: 20px 12px 40px; }
   .table-wrap { overflow-x: auto; }
+}
+@media (max-width: 560px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .stat-card { padding: 10px 12px; }
+  .stat-card__value { font-size: 20px; }
 }
 
 /* совсем узкий экран (телефон): в шапке 5 кнопок + время обновления не
